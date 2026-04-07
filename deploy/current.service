@@ -1,0 +1,16 @@
+[Unit]
+Description=Current local-first server
+After=network.target
+
+[Service]
+Type=simple
+User={{CURRENT_USER}}
+WorkingDirectory={{CURRENT_WORKDIR}}
+Environment=CURRENT_CONFIG_PATH=/etc/current/current.config.json
+ExecStart=/usr/bin/env bash -lc 'if command -v pnpm >/dev/null 2>&1; then pnpm --filter @current/server start; else npm run start --workspace=@current/server; fi'
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
