@@ -8,6 +8,16 @@ coverage
 .env
 .env.*
 *.log
-apps/server/data
-apps/server/uploads
-apps/server/backups
+
+# Local server runtime state
+apps/server/config/current.config.json
+apps/server/data/
+apps/server/uploads/
+apps/server/backups/
+apps/server/apps/server/data/
+apps/server/apps/server/uploads/
+apps/server/apps/server/backups/
+apps/server/**/*.sqlite
+apps/server/**/*.sqlite-shm
+apps/server/**/*.sqlite-wal
+apps/server/**/*.db
