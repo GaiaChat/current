@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { AccessRequestsRepository } from './access-requests-repository.js';
 import { AuditRepository } from './audit-repository.js';
 import { AutomodRepository } from './automod-repository.js';
+import { ChannelNotificationSettingsRepository } from './channel-notification-settings-repository.js';
 import { ChannelsRepository } from './channels-repository.js';
 import { GatewayEventsRepository } from './gateway-events-repository.js';
 import { InvitesRepository } from './invites-repository.js';
@@ -21,6 +22,7 @@ export interface RepositoryBag {
   users: UsersRepository;
   userIps: UserIpRepository;
   roles: RolesRepository;
+  channelNotificationSettings: ChannelNotificationSettingsRepository;
   channels: ChannelsRepository;
   messages: MessagesRepository;
   invites: InvitesRepository;
@@ -40,6 +42,7 @@ export function createRepositories(db: DatabaseSync): RepositoryBag {
     users: new UsersRepository(db),
     userIps: new UserIpRepository(db),
     roles: new RolesRepository(db),
+    channelNotificationSettings: new ChannelNotificationSettingsRepository(db),
     channels: new ChannelsRepository(db),
     messages: new MessagesRepository(db),
     invites: new InvitesRepository(db),

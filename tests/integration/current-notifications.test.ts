@@ -179,7 +179,103 @@ describe('current notification feed', () => {
       },
     });
     expect(authorFeedResponse.statusCode).toBe(200);
-    expect((authorFeedResponse.json() as { items: unknown[] }).items).toEqual([]);
+    const authorFeed = authorFeedResponse.json() as {
+      items: Array<{ seq: number; kind: string; message: { content: string; authorId: string } }>;
+    };
+    expect(authorFeed.items).toHaveLength(1);
+    expect(authorFeed.items[0]).toMatchObject({
+      kind: 'current_message',
+      message: {
+        content: 'a message worth replying to',
+        authorId: 'usr_notification_target',
+      },
+    });
+
+    const settingsResponse = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/channels/${setup.defaultChannelId}/notification-settings`,
+      cookies: {
+        current_session: 'notification_author_session',
+      },
+      payload: {
+        notificationLevel: 'mentions',
+      },
+    });
+    expect(settingsResponse.statusCode).toBe(200);
+
+    const quietMessageResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/channels/${setup.defaultChannelId}/messages`,
+      cookies: {
+        current_session: 'notification_target_session',
+      },
+      payload: {
+        content: 'general chatter after mention-only',
+      },
+    });
+    expect(quietMessageResponse.statusCode).toBe(201);
+
+    const quietFeedResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/notifications/current?afterSeq=${authorFeed.items[0].seq}&limit=10`,
+      cookies: {
+        current_session: 'notification_author_session',
+      },
+    });
+    expect(quietFeedResponse.statusCode).toBe(200);
+    expect((quietFeedResponse.json() as { items: unknown[] }).items).toEqual([]);
+
+    const authorMentionResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/channels/${setup.defaultChannelId}/messages`,
+      cookies: {
+        current_session: 'notification_target_session',
+      },
+      payload: {
+        content: 'ping @notification-author.bsky.social',
+        notificationMentions: ['notification-author.bsky.social'],
+      },
+    });
+    expect(authorMentionResponse.statusCode).toBe(201);
+
+    const mentionOnlyFeedResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/notifications/current?afterSeq=${authorFeed.items[0].seq}&limit=10`,
+      cookies: {
+        current_session: 'notification_author_session',
+      },
+    });
+    expect(mentionOnlyFeedResponse.statusCode).toBe(200);
+    const mentionOnlyFeed = mentionOnlyFeedResponse.json() as {
+      items: Array<{ kind: string; message: { content: string } }>;
+    };
+    expect(mentionOnlyFeed.items).toHaveLength(1);
+    expect(mentionOnlyFeed.items[0]).toMatchObject({
+      kind: 'current_mention',
+      message: {
+        content: 'ping @notification-author.bsky.social',
+      },
+    });
+
+    const readResponse = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/channels/${setup.defaultChannelId}/read`,
+      cookies: {
+        current_session: 'notification_author_session',
+      },
+      payload: {},
+    });
+    expect(readResponse.statusCode).toBe(200);
+
+    const readFeedResponse = await app.inject({
+      method: 'GET',
+      url: '/api/v1/notifications/current?afterSeq=0&limit=10',
+      cookies: {
+        current_session: 'notification_author_session',
+      },
+    });
+    expect(readFeedResponse.statusCode).toBe(200);
+    expect((readFeedResponse.json() as { items: unknown[] }).items).toEqual([]);
 
     await close();
   });

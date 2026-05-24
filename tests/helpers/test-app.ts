@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createDefaultConfig } from '@current/config';
+import { DEFAULT_ATPROTO_OAUTH_SCOPE, createDefaultConfig } from '@current/config';
 import { createDb } from '../../apps/server/src/db/client.js';
 import { createAppContext } from '../../apps/server/src/create-context.js';
 import { buildApp } from '../../apps/server/src/app.js';
@@ -30,7 +30,7 @@ export async function createTestApp(options: { webDistDir?: string | false } = {
       authorizationEndpoint: 'https://example.com/oauth/authorize',
       tokenEndpoint: 'https://example.com/oauth/token',
       profileEndpoint: 'https://example.com/profile',
-      scope: 'atproto transition:generic',
+      scope: DEFAULT_ATPROTO_OAUTH_SCOPE,
       cookieSecret: 'super-secret-cookie-key-for-tests-only',
     },
     media: {

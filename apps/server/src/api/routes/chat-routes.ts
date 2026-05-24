@@ -7,9 +7,16 @@ import type {
   CurrentMessageNotificationPayload,
   CurrentNotificationKind,
 } from '../../db/repositories/notification-events-repository.js';
+import {
+  effectiveChannelNotificationLevel,
+  isChannelMuteActive,
+  type ChannelNotificationLevel,
+  type ChannelNotificationSetting,
+} from '../../db/repositories/channel-notification-settings-repository.js';
 import { requireAuth } from '../auth-guard.js';
 import { denyForbidden, hasChannelPermission, hasServerPermission } from '../permission-guard.js';
 import { decodeCursor } from '../../utils/cursor.js';
+import { nowIso } from '../../utils/time.js';
 
 const ChannelTypeSchema = z.enum(['category', 'text', 'voice', 'dm']);
 const ChannelPositionSchema = z.number().int().min(0).max(1_000_000_000);
@@ -131,6 +138,21 @@ const CurrentNotificationsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
 });
 
+const IsoTimestampSchema = z.string().trim().min(1).max(64).refine((value) => Number.isFinite(Date.parse(value)), {
+  message: 'Expected an ISO timestamp.',
+});
+
+const ChannelNotificationLevelSchema = z.enum(['default', 'all', 'mentions', 'nothing']);
+
+const ChannelNotificationSettingsPatchSchema = z.object({
+  notificationLevel: ChannelNotificationLevelSchema.optional(),
+  mutedUntil: IsoTimestampSchema.nullable().optional(),
+});
+
+const ChannelReadSchema = z.object({
+  readAt: IsoTimestampSchema.optional(),
+});
+
 const MessageSearchQuerySchema = z.object({
   q: z.string().trim().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
@@ -207,7 +229,55 @@ function notificationKindForTarget(input: {
   mentioned: boolean;
   replyToUser: boolean;
 }): CurrentNotificationKind {
-  return input.mentioned ? 'current_mention' : 'current_reply';
+  if (input.mentioned) {
+    return 'current_mention';
+  }
+  if (input.replyToUser) {
+    return 'current_reply';
+  }
+  return 'current_message';
+}
+
+function serializeChannelNotificationSetting(setting: ChannelNotificationSetting): ChannelNotificationSetting {
+  return {
+    userId: setting.userId,
+    channelId: setting.channelId,
+    notificationLevel: setting.notificationLevel,
+    mutedUntil: setting.mutedUntil,
+    lastReadAt: setting.lastReadAt,
+    updatedAt: setting.updatedAt,
+  };
+}
+
+function isNotificationRead(input: { setting: ChannelNotificationSetting; createdAt: string }): boolean {
+  if (!input.setting.lastReadAt) {
+    return false;
+  }
+  const notificationCreatedAt = Date.parse(input.createdAt);
+  const lastReadAt = Date.parse(input.setting.lastReadAt);
+  return Number.isFinite(notificationCreatedAt) && Number.isFinite(lastReadAt) && notificationCreatedAt <= lastReadAt;
+}
+
+function shouldDeliverNotification(input: {
+  kind: CurrentNotificationKind;
+  setting: ChannelNotificationSetting;
+  createdAt?: string;
+  now?: number;
+}): boolean {
+  if (input.createdAt && isNotificationRead({ setting: input.setting, createdAt: input.createdAt })) {
+    return false;
+  }
+  if (isChannelMuteActive(input.setting.mutedUntil, input.now)) {
+    return false;
+  }
+  const level = effectiveChannelNotificationLevel(input.setting.notificationLevel);
+  if (level === 'nothing') {
+    return false;
+  }
+  if (level === 'mentions') {
+    return input.kind === 'current_mention' || input.kind === 'current_reply';
+  }
+  return true;
 }
 
 function recordCurrentNotificationEvents(
@@ -221,7 +291,7 @@ function recordCurrentNotificationEvents(
     replyToUserId?: string;
   },
 ): void {
-  const targets = new Map<
+  const targetedUsers = new Map<
     string,
     {
       user: CurrentUser;
@@ -231,20 +301,12 @@ function recordCurrentNotificationEvents(
     }
   >();
 
-  const addTarget = (user: CurrentUser | null, patch: { mentionHandle?: string; replyToUser?: boolean }) => {
+  const markTarget = (user: CurrentUser | null, patch: { mentionHandle?: string; replyToUser?: boolean }) => {
     if (!user || user.id === input.message.authorId) {
       return;
     }
 
-    if (!canViewChannel(app, {
-      serverId: input.serverId,
-      channelId: input.channelId,
-      user,
-    })) {
-      return;
-    }
-
-    const existing = targets.get(user.id) ?? {
+    const existing = targetedUsers.get(user.id) ?? {
       user,
       mentioned: false,
       replyToUser: false,
@@ -258,36 +320,62 @@ function recordCurrentNotificationEvents(
     if (patch.replyToUser) {
       existing.replyToUser = true;
     }
-    targets.set(user.id, existing);
+    targetedUsers.set(user.id, existing);
   };
 
   if (input.replyToUserId) {
-    addTarget(app.appContext.repos.users.findById(input.replyToUserId), { replyToUser: true });
+    markTarget(app.appContext.repos.users.findById(input.replyToUserId), { replyToUser: true });
   }
 
   for (const handle of input.mentionHandles) {
-    addTarget(app.appContext.repos.users.findByHandle(handle), { mentionHandle: handle });
+    markTarget(app.appContext.repos.users.findByHandle(handle), { mentionHandle: handle });
   }
 
-  for (const target of targets.values()) {
+  const settingsByUserId = new Map(
+    app.appContext.repos.channelNotificationSettings
+      .listForChannel(input.channelId)
+      .map((setting) => [setting.userId, setting]),
+  );
+
+  for (const user of app.appContext.repos.users.list()) {
+    if (user.id === input.message.authorId) {
+      continue;
+    }
+    if (!canViewChannel(app, {
+      serverId: input.serverId,
+      channelId: input.channelId,
+      user,
+    })) {
+      continue;
+    }
+
+    const target = targetedUsers.get(user.id);
+    const kind = notificationKindForTarget({
+      mentioned: Boolean(target?.mentioned),
+      replyToUser: Boolean(target?.replyToUser),
+    });
+    const setting =
+      settingsByUserId.get(user.id) ??
+      app.appContext.repos.channelNotificationSettings.defaultFor(user.id, input.channelId);
+    if (!shouldDeliverNotification({ kind, setting })) {
+      continue;
+    }
+
     const notification: CurrentMessageNotificationPayload = {
-      ...(target.mentionHandles.size > 0 ? { mentionHandles: [...target.mentionHandles] } : {}),
-      ...(target.replyToUser ? { replyToUserId: target.user.id } : {}),
+      ...(target && target.mentionHandles.size > 0 ? { mentionHandles: [...target.mentionHandles] } : {}),
+      ...(target?.replyToUser ? { replyToUserId: user.id } : {}),
     };
 
     app.appContext.repos.notificationEvents.append({
       gatewaySeq: input.gatewaySeq,
-      userId: target.user.id,
+      userId: user.id,
       serverId: input.serverId,
       channelId: input.channelId,
       messageId: input.message.id,
-      kind: notificationKindForTarget({
-        mentioned: target.mentioned,
-        replyToUser: target.replyToUser,
-      }),
+      kind,
       payload: {
         message: input.message,
-        notification,
+        ...(Object.keys(notification).length > 0 ? { notification } : {}),
       },
     });
   }
@@ -535,6 +623,132 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     reply.code(204).send();
   });
 
+  app.get('/notification-settings/channels', { preHandler: [requireAuth] }, async (request, reply) => {
+    reply.header('cache-control', 'no-store');
+
+    const status = app.appContext.setup.status();
+    if (!status.serverId) {
+      return { items: [] };
+    }
+
+    const currentUser = request.currentUser;
+    if (!currentUser) {
+      reply.code(401).send({ error: 'Unauthorized.' });
+      return;
+    }
+
+    const storedByChannelId = new Map(
+      app.appContext.repos.channelNotificationSettings
+        .listForUser(currentUser.id)
+        .map((setting) => [setting.channelId, setting]),
+    );
+    const channels = filterVisibleChannels(app, {
+      serverId: status.serverId,
+      user: currentUser,
+      channels: app.appContext.repos.channels.listAll(status.serverId),
+    }).filter((channel) => channel.type !== 'category');
+
+    return {
+      items: channels.map((channel) =>
+        serializeChannelNotificationSetting(
+          storedByChannelId.get(channel.id) ??
+            app.appContext.repos.channelNotificationSettings.defaultFor(currentUser.id, channel.id),
+        ),
+      ),
+    };
+  });
+
+  app.put('/channels/:channelId/notification-settings', { preHandler: [requireAuth] }, async (request, reply) => {
+    const params = z.object({ channelId: z.string() }).safeParse(request.params);
+    const body = ChannelNotificationSettingsPatchSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success || !request.currentUser) {
+      reply.code(400).send({ error: !body.success ? body.error.flatten() : 'Invalid request.' });
+      return;
+    }
+
+    const status = app.appContext.setup.status();
+    if (!status.serverId) {
+      reply.code(404).send({ error: 'Server not configured.' });
+      return;
+    }
+
+    const channel = app.appContext.chat.getChannelById(params.data.channelId);
+    if (!channel || channel.serverId !== status.serverId || channel.type === 'category') {
+      reply.code(404).send({ error: 'Channel not found.' });
+      return;
+    }
+    if (!canViewChannel(app, {
+      serverId: status.serverId,
+      channelId: channel.id,
+      user: request.currentUser,
+    })) {
+      reply.code(404).send({ error: 'Channel not found.' });
+      return;
+    }
+
+    const setting = app.appContext.repos.channelNotificationSettings.update({
+      userId: request.currentUser.id,
+      channelId: channel.id,
+      notificationLevel: body.data.notificationLevel as ChannelNotificationLevel | undefined,
+      mutedUntil: body.data.mutedUntil,
+    });
+    const serialized = serializeChannelNotificationSetting(setting);
+    app.appContext.gateway.broadcast(GatewayEvents.NOTIFICATION_UPDATE, {
+      action: 'channel_notification_settings',
+      userId: request.currentUser.id,
+      channelId: channel.id,
+      settings: serialized,
+    });
+
+    reply.send(serialized);
+  });
+
+  app.put('/channels/:channelId/read', { preHandler: [requireAuth] }, async (request, reply) => {
+    const params = z.object({ channelId: z.string() }).safeParse(request.params);
+    const body = ChannelReadSchema.safeParse(request.body ?? {});
+    if (!params.success || !body.success || !request.currentUser) {
+      reply.code(400).send({ error: !body.success ? body.error.flatten() : 'Invalid request.' });
+      return;
+    }
+
+    const status = app.appContext.setup.status();
+    if (!status.serverId) {
+      reply.code(404).send({ error: 'Server not configured.' });
+      return;
+    }
+
+    const channel = app.appContext.chat.getChannelById(params.data.channelId);
+    if (!channel || channel.serverId !== status.serverId || channel.type === 'category') {
+      reply.code(404).send({ error: 'Channel not found.' });
+      return;
+    }
+    if (!canViewChannel(app, {
+      serverId: status.serverId,
+      channelId: channel.id,
+      user: request.currentUser,
+    })) {
+      reply.code(404).send({ error: 'Channel not found.' });
+      return;
+    }
+
+    const readAt = body.data.readAt ?? nowIso();
+    const setting = app.appContext.repos.channelNotificationSettings.update({
+      userId: request.currentUser.id,
+      channelId: channel.id,
+      lastReadAt: readAt,
+    });
+    const serialized = serializeChannelNotificationSetting(setting);
+    app.appContext.gateway.broadcast(GatewayEvents.NOTIFICATION_UPDATE, {
+      action: 'channel_read',
+      userId: request.currentUser.id,
+      channelId: channel.id,
+      readAt,
+      settings: serialized,
+    });
+
+    reply.send(serialized);
+  });
+
   app.get('/notifications/current', { preHandler: [requireAuth] }, async (request, reply) => {
     reply.header('cache-control', 'no-store');
 
@@ -571,13 +785,29 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       limit: limit + 1,
     });
     const pageRows = rows.slice(0, limit);
-    const visibleRows = pageRows.filter((row) =>
-      canViewChannel(app, {
-        serverId,
-        channelId: row.channelId,
-        user: currentUser,
-      }),
+    const settingsByChannelId = new Map(
+      app.appContext.repos.channelNotificationSettings
+        .listForUser(currentUser.id)
+        .map((setting) => [setting.channelId, setting]),
     );
+    const visibleRows = pageRows.filter((row) => {
+      const setting =
+        settingsByChannelId.get(row.channelId) ??
+        app.appContext.repos.channelNotificationSettings.defaultFor(currentUser.id, row.channelId);
+      return (
+        row.serverId === serverId &&
+        canViewChannel(app, {
+          serverId,
+          channelId: row.channelId,
+          user: currentUser,
+        }) &&
+        shouldDeliverNotification({
+          kind: row.kind,
+          setting,
+          createdAt: row.createdAt,
+        })
+      );
+    });
     const hasMore = rows.length > limit;
     const lastScannedSeq = pageRows[pageRows.length - 1]?.seq ?? afterSeq;
 

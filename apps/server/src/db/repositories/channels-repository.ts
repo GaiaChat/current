@@ -267,6 +267,7 @@ export class ChannelsRepository extends BaseRepository {
       this.db.prepare('DELETE FROM messages WHERE channel_id = ?').run(channelId);
       this.db.prepare('DELETE FROM voice_states WHERE channel_id = ?').run(channelId);
       this.db.prepare('DELETE FROM invites WHERE channel_id = ?').run(channelId);
+      this.db.prepare('DELETE FROM channel_notification_settings WHERE channel_id = ?').run(channelId);
       this.db.prepare('DELETE FROM channel_overwrites WHERE channel_id = ?').run(channelId);
       this.db.prepare('DELETE FROM channels WHERE id = ?').run(channelId);
       this.db.exec('COMMIT');

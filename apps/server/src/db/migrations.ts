@@ -237,6 +237,18 @@ export function runMigrations(db: DatabaseSync): void {
       FOREIGN KEY (message_id) REFERENCES messages(id)
     );
 
+    CREATE TABLE IF NOT EXISTS channel_notification_settings (
+      user_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      notification_level TEXT NOT NULL DEFAULT 'default',
+      muted_until TEXT,
+      last_read_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, channel_id),
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (channel_id) REFERENCES channels(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_channel_created_id_not_deleted
       ON messages(channel_id, created_at DESC, id DESC)
@@ -255,6 +267,8 @@ export function runMigrations(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_notification_events_user_gateway_seq
       ON notification_events(user_id, gateway_seq ASC, seq ASC);
     CREATE INDEX IF NOT EXISTS idx_notification_events_message ON notification_events(message_id);
+    CREATE INDEX IF NOT EXISTS idx_channel_notification_settings_channel
+      ON channel_notification_settings(channel_id, user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_user_ip_address ON user_ip_activity(ip_address, last_seen_at DESC);
     CREATE INDEX IF NOT EXISTS idx_access_requests_server_status_requested
@@ -279,6 +293,9 @@ export function runMigrations(db: DatabaseSync): void {
   }
 
   const channelColumns = db.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>;
+  if (!channelColumns.some((column) => column.name === 'category_id')) {
+    db.exec('ALTER TABLE channels ADD COLUMN category_id TEXT;');
+  }
   if (!channelColumns.some((column) => column.name === 'position')) {
     db.exec('ALTER TABLE channels ADD COLUMN position INTEGER NOT NULL DEFAULT 0;');
     const rows = db
@@ -300,6 +317,8 @@ export function runMigrations(db: DatabaseSync): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_channels_server_position_created_id
       ON channels(server_id, position ASC, created_at ASC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_channels_server_category_position
+      ON channels(server_id, category_id, position ASC, created_at ASC, id ASC);
   `);
 
   const serverColumns = db.prepare('PRAGMA table_info(servers)').all() as Array<{ name: string }>;

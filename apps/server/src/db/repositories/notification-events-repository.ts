@@ -4,7 +4,7 @@ import { BaseRepository } from './base-repository.js';
 import { id } from '../../utils/id.js';
 import { nowIso } from '../../utils/time.js';
 
-export type CurrentNotificationKind = 'current_mention' | 'current_reply';
+export type CurrentNotificationKind = 'current_message' | 'current_mention' | 'current_reply';
 
 export interface CurrentMessageNotificationPayload {
   mentionHandles?: string[];
@@ -41,7 +41,10 @@ interface NotificationEventRow {
 }
 
 function coerceKind(value: string): CurrentNotificationKind {
-  return value === 'current_reply' ? 'current_reply' : 'current_mention';
+  if (value === 'current_reply' || value === 'current_message') {
+    return value;
+  }
+  return 'current_mention';
 }
 
 export class NotificationEventsRepository extends BaseRepository {

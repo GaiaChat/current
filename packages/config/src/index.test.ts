@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDefaultConfig, migrateConfig } from './index.js';
+import { DEFAULT_ATPROTO_OAUTH_SCOPE, createDefaultConfig, migrateConfig } from './index.js';
 
 describe('config schema', () => {
   it('creates a valid default config', () => {
@@ -12,6 +12,7 @@ describe('config schema', () => {
     expect(config.auth.mode).toBe('atproto');
     expect(config.auth.redirectUri).toBe('http://localhost:6414/api/v1/auth/oauth/callback');
     expect(config.auth.lanRedirectBaseUrl).toBe('');
+    expect(config.auth.scope).toBe(DEFAULT_ATPROTO_OAUTH_SCOPE);
     expect(config.media.gifProvider).toBe('klipy');
     expect(config.media.gifFallbackProvider).toBe('none');
     expect(config.media.giphyApiKey).toBe('');

@@ -25,6 +25,16 @@ interface TextModalDescriptor extends BaseModalDescriptor<string | null> {
   multiline?: boolean;
 }
 
+interface ChoiceModalDescriptor extends BaseModalDescriptor<string | null> {
+  kind: 'choice';
+  options: Array<{
+    value: string;
+    label: string;
+    description?: string;
+  }>;
+  defaultValue?: string;
+}
+
 interface ModerationModalDescriptor extends BaseModalDescriptor<ModerationModalResult | null> {
   kind: 'moderation';
   defaultReason?: string;
@@ -39,6 +49,7 @@ interface InfoModalDescriptor extends BaseModalDescriptor<void> {
 type ActionModalDescriptor =
   | ConfirmModalDescriptor
   | TextModalDescriptor
+  | ChoiceModalDescriptor
   | ModerationModalDescriptor
   | InfoModalDescriptor;
 
@@ -51,6 +62,7 @@ export interface ActionModalController {
   modal: ActionModalDescriptor | null;
   confirm: (input: Omit<ConfirmModalDescriptor, 'kind' | 'resolve'>) => Promise<boolean>;
   textInput: (input: Omit<TextModalDescriptor, 'kind' | 'resolve'>) => Promise<string | null>;
+  choice: (input: Omit<ChoiceModalDescriptor, 'kind' | 'resolve'>) => Promise<string | null>;
   moderation: (input: Omit<ModerationModalDescriptor, 'kind' | 'resolve'>) => Promise<ModerationModalResult | null>;
   info: (input: Omit<InfoModalDescriptor, 'kind' | 'resolve'>) => void;
   close: (resolveDismissal?: boolean) => void;
@@ -68,6 +80,8 @@ export function useActionModal(): ActionModalController {
       if (current?.kind === 'confirm') {
         current.resolve(false);
       } else if (current?.kind === 'text') {
+        current.resolve(null);
+      } else if (current?.kind === 'choice') {
         current.resolve(null);
       } else if (current?.kind === 'moderation') {
         current.resolve(null);
@@ -98,6 +112,16 @@ export function useActionModal(): ActionModalController {
     });
   }, []);
 
+  const choice = useCallback<ActionModalController['choice']>((input) => {
+    return new Promise<string | null>((resolve) => {
+      setModal({
+        ...input,
+        kind: 'choice',
+        resolve,
+      });
+    });
+  }, []);
+
   const moderation = useCallback<ActionModalController['moderation']>((input) => {
     return new Promise<ModerationModalResult | null>((resolve) => {
       setModal({
@@ -120,6 +144,7 @@ export function useActionModal(): ActionModalController {
     modal,
     confirm,
     textInput,
+    choice,
     moderation,
     info,
     close,
@@ -137,6 +162,7 @@ export function ActionModalHost({
 }) {
   const modalGlassRef = useRef<HTMLFormElement | null>(null);
   const [value, setValue] = useState('');
+  const [choiceValue, setChoiceValue] = useState('');
   const [reason, setReason] = useState('');
   const [timeoutMinutes, setTimeoutMinutes] = useState(10);
 
@@ -147,6 +173,10 @@ export function ActionModalHost({
 
     if (modal.kind === 'text') {
       setValue(modal.defaultValue ?? '');
+    }
+
+    if (modal.kind === 'choice') {
+      setChoiceValue(modal.defaultValue ?? modal.options[0]?.value ?? '');
     }
 
     if (modal.kind === 'moderation') {
@@ -184,6 +214,11 @@ export function ActionModalHost({
         return;
       }
       modal.resolve(nextValue);
+    } else if (modal.kind === 'choice') {
+      if (!modal.options.some((option) => option.value === choiceValue)) {
+        return;
+      }
+      modal.resolve(choiceValue);
     } else if (modal.kind === 'moderation') {
       modal.resolve({
         reason: reason.trim() || modal.defaultReason || 'No reason provided',
@@ -246,6 +281,24 @@ export function ActionModalHost({
               autoFocus
             />
           )
+        )}
+
+        {modal.kind === 'choice' && (
+          <div className="action-modal-choice-list" role="radiogroup" aria-label={modal.title}>
+            {modal.options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className={`action-modal-choice ${choiceValue === option.value ? 'active' : ''}`}
+                aria-checked={choiceValue === option.value}
+                role="radio"
+                onClick={() => setChoiceValue(option.value)}
+              >
+                <span>{option.label}</span>
+                {option.description && <small>{option.description}</small>}
+              </button>
+            ))}
+          </div>
         )}
 
         {modal.kind === 'moderation' && (

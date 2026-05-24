@@ -26,6 +26,7 @@ export type ServerEventType =
   | 'VOICE_SPEAKING'
   | 'SERVER_UPDATE'
   | 'MEMBER_UPDATE'
+  | 'NOTIFICATION_UPDATE'
   | 'MOD_ACTION'
   | 'ERROR';
 
@@ -110,6 +111,21 @@ export interface MemberUpdatePayload {
   reason?: string;
 }
 
+export interface NotificationUpdatePayload {
+  action: 'channel_read' | 'channel_notification_settings';
+  userId: string;
+  channelId: string;
+  readAt?: string;
+  settings?: {
+    userId: string;
+    channelId: string;
+    notificationLevel: 'default' | 'all' | 'mentions' | 'nothing';
+    mutedUntil?: string;
+    lastReadAt?: string;
+    updatedAt: string;
+  };
+}
+
 export interface ErrorPayload {
   code: string;
   message: string;
@@ -134,6 +150,7 @@ export const GatewayEvents = {
   VOICE_SPEAKING: 'VOICE_SPEAKING',
   SERVER_UPDATE: 'SERVER_UPDATE',
   MEMBER_UPDATE: 'MEMBER_UPDATE',
+  NOTIFICATION_UPDATE: 'NOTIFICATION_UPDATE',
   MOD_ACTION: 'MOD_ACTION',
   ERROR: 'ERROR',
 } as const;

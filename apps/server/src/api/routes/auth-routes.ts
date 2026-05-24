@@ -885,7 +885,7 @@ async function verifyLauncherAccessTokenWithResource(input: {
   });
 
   if (!response.ok) {
-    throw new Error('The Bluesky server rejected the launcher token proof.');
+    throw new Error('The ATProto server rejected the launcher token proof.');
   }
 
   const payload = (await response.json()) as { did?: unknown };
@@ -956,7 +956,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     reply.code(409).send({
       error: {
         code: 'ATPROTO_AUTH_DISABLED',
-        message: 'Bluesky OAuth is disabled for this instance. Use LAN screen-name sign-in.',
+        message: 'ATProto OAuth is disabled for this instance. Use LAN screen-name sign-in.',
       },
     });
     return false;
@@ -1062,7 +1062,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
             hostAuthUrl,
             expiresAt: new Date(state.expiresAt).toISOString(),
             message:
-              'Complete Bluesky sign-in on the host machine to finish login on this LAN client.',
+              'Complete ATProto sign-in on the host machine to finish login on this LAN client.',
           },
         });
         return;
@@ -1148,7 +1148,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
           buildLanHandoffPage({
             title: 'Sign-In Could Not Start',
             message:
-              error instanceof Error ? error.message : 'Unable to start Bluesky sign-in right now.',
+              error instanceof Error ? error.message : 'Unable to start ATProto sign-in right now.',
           }),
         );
     }
@@ -1699,7 +1699,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       reply.code(401).send({
         error: {
           code: 'MISSING_LAUNCHER_TOKEN',
-          message: 'Gaia Launcher did not provide its Bluesky auth token.',
+          message: 'Gaia Launcher did not provide its ATProto auth token.',
         },
       });
       return;
@@ -1739,7 +1739,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         reply.code(401).send({
           error: {
             code: 'LAUNCHER_PROFILE_MISMATCH',
-            message: 'Gaia Launcher profile does not match its Bluesky token.',
+            message: 'Gaia Launcher profile does not match its ATProto token.',
           },
         });
         return;

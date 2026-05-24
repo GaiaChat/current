@@ -66,6 +66,15 @@ interface PanelBackgroundAsset {
   url?: string;
 }
 
+interface ChannelDraft {
+  name: string;
+  type: Channel['type'];
+  categoryId: string;
+  topic: string;
+  slowmodeSeconds: number;
+  locked: boolean;
+}
+
 interface ServerAppearancePayload {
   background: PanelBackgroundAsset;
   panelColor: string;
@@ -804,6 +813,10 @@ function SettingBadge({ path, settings }: { path: string; settings?: ServerSetti
   return <span className="settings-restart-badge">Restart</span>;
 }
 
+function compareChannelsForSettings(a: Channel, b: Channel): number {
+  return a.position - b.position || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+}
+
 function PanelUploadIcon() {
   return (
     <svg className="look-upload-icon" viewBox="0 0 48 48" aria-hidden="true" focusable="false">
@@ -858,7 +871,7 @@ export function ServerSettingsModal({
   const [moderationType, setModerationType] = useState<'warn' | 'mute' | 'timeout' | 'kick' | 'ban'>('warn');
   const [moderationReason, setModerationReason] = useState('');
   const [selectedChannelId, setSelectedChannelId] = useState('');
-  const [channelDraft, setChannelDraft] = useState<{ name: string; type: Channel['type']; topic: string; slowmodeSeconds: number; locked: boolean } | null>(null);
+  const [channelDraft, setChannelDraft] = useState<ChannelDraft | null>(null);
   const [overwriteDrafts, setOverwriteDrafts] = useState<ChannelPermissionOverwrite[]>([]);
   const [overwriteTarget, setOverwriteTarget] = useState('');
   const [inviteMaxUses, setInviteMaxUses] = useState('');
@@ -1185,6 +1198,7 @@ export function ServerSettingsModal({
     setChannelDraft({
       name: selectedChannel.name,
       type: selectedChannel.type,
+      categoryId: selectedChannel.categoryId ?? '',
       topic: selectedChannel.topic ?? '',
       slowmodeSeconds: selectedChannel.slowmodeSeconds,
       locked: selectedChannel.locked,
@@ -1336,7 +1350,10 @@ export function ServerSettingsModal({
       if (!selectedChannel || !channelDraft) {
         throw new Error('Select a channel first.');
       }
-      return apiPatch<Channel>(`/api/v1/channels/${selectedChannel.id}`, channelDraft);
+      return apiPatch<Channel>(`/api/v1/channels/${selectedChannel.id}`, {
+        ...channelDraft,
+        categoryId: channelDraft.type === 'category' ? null : channelDraft.categoryId || null,
+      });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['channels'] });
@@ -1807,7 +1824,7 @@ export function ServerSettingsModal({
           <label>
             {renderFieldLabel('Authentication mode')}
             <select value={draft.auth.mode} onChange={(event) => updateDraft('auth', { mode: event.target.value as AuthMode })}>
-              <option value="atproto">Bluesky OAuth</option>
+              <option value="atproto">ATProto OAuth</option>
               <option value="lan">LAN screen-name</option>
             </select>
           </label>
@@ -2156,91 +2173,144 @@ export function ServerSettingsModal({
     </div>
   );
 
-  const renderChannels = () => (
-    <div className="settings-split">
-      <aside className="settings-list">
-        {channels.map((channel) => (
-          <button key={channel.id} className={selectedChannelId === channel.id ? 'active' : ''} onClick={() => setSelectedChannelId(channel.id)}>
-            <span>{channel.type === 'category' ? 'Category' : channel.type === 'voice' ? 'Voice' : '#'} {channel.name}</span>
-            <small>{channel.locked ? 'Locked' : channel.type}</small>
-          </button>
-        ))}
-      </aside>
-      <section className="settings-panel wide">
-        {selectedChannel && channelDraft ? (
-          <>
-            <h3>#{selectedChannel.name}</h3>
-            <div className="settings-two-col">
-              <label>
-                {renderFieldLabel('Name')}
-                <input value={channelDraft.name} onChange={(event) => setChannelDraft({ ...channelDraft, name: event.target.value })} />
-              </label>
-              <label>
-                {renderFieldLabel('Type')}
-                <select value={channelDraft.type} onChange={(event) => setChannelDraft({ ...channelDraft, type: event.target.value as Channel['type'] })}>
-                  <option value="text">Text</option>
-                  <option value="voice">Voice</option>
-                  <option value="category">Category</option>
-                  <option value="dm">DM</option>
-                </select>
-              </label>
-            </div>
-            <label>
-              {renderFieldLabel('Topic')}
-              <input value={channelDraft.topic} onChange={(event) => setChannelDraft({ ...channelDraft, topic: event.target.value })} />
-            </label>
-            <div className="settings-two-col">
-              <label>
-                {renderFieldLabel('Slowmode seconds')}
-                <input type="number" value={channelDraft.slowmodeSeconds} onChange={(event) => setChannelDraft({ ...channelDraft, slowmodeSeconds: Number(event.target.value) })} />
-              </label>
-              <label className="settings-check-row padded">
-                <input type="checkbox" checked={channelDraft.locked} onChange={(event) => setChannelDraft({ ...channelDraft, locked: event.target.checked })} />
-                <span>Locked</span>
-              </label>
-            </div>
-            <button onClick={() => saveChannelMutation.mutate()} disabled={saveChannelMutation.isPending}>Save Channel</button>
+  const renderChannels = () => {
+    const orderedChannels = [...channels].sort(compareChannelsForSettings);
+    const channelCategories = orderedChannels.filter(
+      (channel) => channel.type === 'category' && channel.id !== selectedChannelId,
+    );
+    const isCategoryDraft = channelDraft?.type === 'category';
 
-            <hr className="settings-divider" />
-            <h3>Permission Overwrites</h3>
-            <div className="settings-inline">
-              <select value={overwriteTarget} onChange={(event) => setOverwriteTarget(event.target.value)}>
-                <option value="">Add role or member override</option>
-                {roles.map((role) => <option key={`role:${role.id}`} value={`role:${role.id}`}>Role: {role.name}</option>)}
-                {members.map((member) => <option key={`user:${member.id}`} value={`user:${member.id}`}>Member: {member.displayName}</option>)}
-              </select>
-              <button onClick={addOverwrite}>Add</button>
-            </div>
-            <div className="settings-overwrite-list">
-              {overwriteDrafts.map((overwrite, index) => {
-                const label = overwrite.targetType === 'role'
-                  ? rolesById.get(overwrite.targetId)?.name ?? 'Unknown role'
-                  : membersById.get(overwrite.targetId)?.displayName ?? 'Unknown member';
-                return (
-                  <div key={`${overwrite.targetType}:${overwrite.targetId}`} className="settings-overwrite">
-                    <header>
-                      <strong>{label}</strong>
-                      <button onClick={() => removeOverwrite(index)}>Remove</button>
-                    </header>
-                    {PERMISSIONS.map((permission) => (
-                      <div key={permission} className="settings-overwrite-row">
-                        <span>{formatPermission(permission)}</span>
-                        <div className="settings-tristate">
-                          {(['inherit', 'allow', 'deny'] as const).map((state) => (
-                            <button
-                              key={state}
-                              className={permissionState(overwrite, permission) === state ? 'active' : ''}
-                              onClick={() => setOverwritePermission(index, permission, state)}
-                            >
-                              {state}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+    return (
+      <div className="settings-split">
+        <aside className="settings-list">
+          {orderedChannels.map((channel) => {
+            const isNested = Boolean(channel.categoryId);
+            const className = [
+              selectedChannelId === channel.id ? 'active' : '',
+              channel.type === 'category' ? 'settings-channel-category-row' : '',
+              isNested ? 'settings-channel-nested-row' : '',
+            ].filter(Boolean).join(' ');
+            return (
+              <button key={channel.id} className={className} onClick={() => setSelectedChannelId(channel.id)}>
+                <span>{channel.type === 'category' ? 'Category' : channel.type === 'voice' ? 'Voice' : '#'} {channel.name}</span>
+                <small>{channel.locked ? 'Locked' : channel.type}</small>
+              </button>
+            );
+          })}
+        </aside>
+        <section className="settings-panel wide">
+          {selectedChannel && channelDraft ? (
+            <>
+              <h3>{selectedChannel.type === 'category' ? selectedChannel.name : `#${selectedChannel.name}`}</h3>
+              <div className="settings-two-col">
+                <label>
+                  {renderFieldLabel('Name')}
+                  <input value={channelDraft.name} onChange={(event) => setChannelDraft({ ...channelDraft, name: event.target.value })} />
+                </label>
+                <label>
+                  {renderFieldLabel('Type')}
+                  <select
+                    value={channelDraft.type}
+                    onChange={(event) => {
+                      const nextType = event.target.value as Channel['type'];
+                      setChannelDraft({
+                        ...channelDraft,
+                        type: nextType,
+                        categoryId: nextType === 'category' ? '' : channelDraft.categoryId,
+                      });
+                    }}
+                  >
+                    <option value="text">Text</option>
+                    <option value="voice">Voice</option>
+                    <option value="category">Category</option>
+                    <option value="dm">DM</option>
+                  </select>
+                </label>
+              </div>
+              {!isCategoryDraft && (
+                <label>
+                  {renderFieldLabel('Category')}
+                  <select
+                    value={channelDraft.categoryId}
+                    onChange={(event) => setChannelDraft({ ...channelDraft, categoryId: event.target.value })}
+                  >
+                    <option value="">No category</option>
+                    {channelCategories.map((category) => (
+                      <option key={category.id} value={category.id}>{category.name}</option>
                     ))}
-                  </div>
-                );
-              })}
+                  </select>
+                </label>
+              )}
+              <label>
+                {renderFieldLabel('Topic')}
+                <input
+                  value={channelDraft.topic}
+                  disabled={isCategoryDraft}
+                  onChange={(event) => setChannelDraft({ ...channelDraft, topic: event.target.value })}
+                />
+              </label>
+              <div className="settings-two-col">
+                <label>
+                  {renderFieldLabel('Slowmode seconds')}
+                  <input
+                    type="number"
+                    value={channelDraft.slowmodeSeconds}
+                    disabled={isCategoryDraft}
+                    onChange={(event) => setChannelDraft({ ...channelDraft, slowmodeSeconds: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="settings-check-row padded">
+                  <input
+                    type="checkbox"
+                    checked={channelDraft.locked}
+                    disabled={isCategoryDraft}
+                    onChange={(event) => setChannelDraft({ ...channelDraft, locked: event.target.checked })}
+                  />
+                  <span>Locked</span>
+                </label>
+              </div>
+              <button onClick={() => saveChannelMutation.mutate()} disabled={saveChannelMutation.isPending}>Save Channel</button>
+
+              <hr className="settings-divider" />
+              <h3>Permission Overwrites</h3>
+              <div className="settings-inline">
+                <select value={overwriteTarget} onChange={(event) => setOverwriteTarget(event.target.value)}>
+                  <option value="">Add role or member override</option>
+                  {roles.map((role) => <option key={`role:${role.id}`} value={`role:${role.id}`}>Role: {role.name}</option>)}
+                  {members.map((member) => <option key={`user:${member.id}`} value={`user:${member.id}`}>Member: {member.displayName}</option>)}
+                </select>
+                <button onClick={addOverwrite}>Add</button>
+              </div>
+              <div className="settings-overwrite-list">
+                {overwriteDrafts.map((overwrite, index) => {
+                  const label = overwrite.targetType === 'role'
+                    ? rolesById.get(overwrite.targetId)?.name ?? 'Unknown role'
+                    : membersById.get(overwrite.targetId)?.displayName ?? 'Unknown member';
+                  return (
+                    <div key={`${overwrite.targetType}:${overwrite.targetId}`} className="settings-overwrite">
+                      <header>
+                        <strong>{label}</strong>
+                        <button onClick={() => removeOverwrite(index)}>Remove</button>
+                      </header>
+                      {PERMISSIONS.map((permission) => (
+                        <div key={permission} className="settings-overwrite-row">
+                          <span>{formatPermission(permission)}</span>
+                          <div className="settings-tristate">
+                            {(['inherit', 'allow', 'deny'] as const).map((state) => (
+                              <button
+                                key={state}
+                                className={permissionState(overwrite, permission) === state ? 'active' : ''}
+                                onClick={() => setOverwritePermission(index, permission, state)}
+                              >
+                                {state}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
             </div>
             <button onClick={() => saveOverwritesMutation.mutate()} disabled={saveOverwritesMutation.isPending}>
               Save Permission Overwrites
@@ -2250,8 +2320,9 @@ export function ServerSettingsModal({
           <div className="settings-empty-inline">Select a channel to manage.</div>
         )}
       </section>
-    </div>
-  );
+      </div>
+    );
+  };
 
   const renderInvites = () => (
     <section className="settings-panel wide">

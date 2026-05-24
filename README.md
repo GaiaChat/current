@@ -79,7 +79,7 @@ For the old workspace-wide dev watchers, run `pnpm dev:workspace`.
 
 Text messages are encrypted in the browser before they are sent. Authenticated clients automatically claim or fetch the shared room key so messages stay readable across browsers.
 
-If Bluesky OAuth is not configured yet, use `Local Dev Sign-In` on the auth screen.
+If ATProto OAuth is not configured yet, use `Local Dev Sign-In` on the auth screen.
 This is controlled by `auth.allowDevLogin` in server config (enabled by default for local testing).
 
 ## Desktop App

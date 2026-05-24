@@ -1,9 +1,62 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type { Channel } from '@current/types';
 import { describe, expect, it } from 'vitest';
+import { createDb } from '../../apps/server/src/db/client.js';
 import { addHours, nowIso } from '../../apps/server/src/utils/time.js';
 import { createTestApp } from '../helpers/test-app.js';
 
 describe('channel categories', () => {
+  it('migrates existing channel tables to store category placement', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'current-category-migration-'));
+    const dbPath = join(dir, 'current.sqlite');
+    const legacyDb = new DatabaseSync(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE servers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        registration_mode TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE channels (
+        id TEXT PRIMARY KEY,
+        server_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        topic TEXT,
+        slowmode_seconds INTEGER NOT NULL DEFAULT 0,
+        locked INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (server_id) REFERENCES servers(id)
+      );
+
+      INSERT INTO servers (id, name, slug, registration_mode, created_at)
+      VALUES ('srv_legacy', 'Legacy', 'legacy', 'invite_only', '2026-01-01T00:00:00.000Z');
+
+      INSERT INTO channels (id, server_id, name, type, topic, slowmode_seconds, locked, created_at)
+      VALUES ('chn_general', 'srv_legacy', 'general', 'text', NULL, 0, 0, '2026-01-01T00:00:00.000Z');
+    `);
+    legacyDb.close();
+
+    const migratedDb = createDb(dbPath);
+    try {
+      const columns = migratedDb.prepare('PRAGMA table_info(channels)').all() as Array<{ name: string }>;
+      expect(columns.map((column) => column.name)).toContain('category_id');
+
+      const channel = migratedDb
+        .prepare('SELECT category_id, position FROM channels WHERE id = ?')
+        .get('chn_general') as { category_id: string | null; position: number };
+      expect(channel.category_id).toBeNull();
+      expect(channel.position).toBe(1000);
+    } finally {
+      migratedDb.close();
+    }
+  });
+
   it('creates categories, persists sidebar order, and keeps category rows non-messageable', async () => {
     const { app, db, close } = await createTestApp();
 

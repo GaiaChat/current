@@ -40,6 +40,23 @@ const OAUTH_SESSION_PREFIX = 'oauth:session:';
 const PROFILE_FETCH_TIMEOUT_MS = 1_000;
 export const LOOPBACK_REMOTE_RETURN_TO_CODE = 'LOOPBACK_REMOTE_RETURN_TO';
 
+function normalizeAtprotoDid(input: string): string | null {
+  const value = input.trim();
+  if (!value.toLowerCase().startsWith('did:')) {
+    return null;
+  }
+
+  const normalized = value.toLowerCase();
+  if (/^did:plc:[a-z0-9._:%-]+$/.test(normalized)) {
+    return normalized;
+  }
+  if (/^did:web:[a-z0-9._~%:-]+$/.test(normalized)) {
+    return normalized;
+  }
+
+  throw new Error('Enter a supported ATProto DID: did:plc or did:web.');
+}
+
 export class AuthService {
   private oauthClient: NodeOAuthClient | null = null;
   private oauthClientConfigKey: string | null = null;
@@ -359,7 +376,7 @@ export class AuthService {
     }
 
     const error = new Error(
-      'This server is using loopback Bluesky OAuth and can only complete sign-in on the host machine. ' +
+      'This server is using loopback ATProto OAuth and can only complete sign-in on the host machine. ' +
         'For remote clients, configure auth.atprotoClientId and auth.redirectUri for your public HTTPS domain.',
     ) as Error & { code?: string };
     error.code = LOOPBACK_REMOTE_RETURN_TO_CODE;
@@ -449,11 +466,12 @@ export class AuthService {
   private normalizeAtprotoIdentity(rawInput: string): string {
     const input = rawInput.trim();
     if (!input) {
-      throw new Error('Enter a Bluesky handle/domain, DID, or server host.');
+      throw new Error('Enter an ATProto handle, DID, or server host.');
     }
 
-    if (input.startsWith('did:')) {
-      return input;
+    const normalizedDid = normalizeAtprotoDid(input);
+    if (normalizedDid) {
+      return normalizedDid;
     }
 
     if (input.startsWith('http://') || input.startsWith('https://')) {
@@ -469,7 +487,7 @@ export class AuthService {
 
     const handle = input.startsWith('@') ? input.slice(1) : input;
     if (!handle) {
-      throw new Error('Enter your Bluesky handle (for example: alice.bsky.social).');
+      throw new Error('Enter your ATProto handle or server host.');
     }
 
     const normalizedHandle = handle.toLowerCase();
@@ -478,11 +496,11 @@ export class AuthService {
     }
 
     if (handle.includes('@')) {
-      throw new Error('Use your Bluesky handle (alice.bsky.social), not your email address.');
+      throw new Error('Use your ATProto handle or server host, not your email address.');
     }
 
     if (!handle.includes('.')) {
-      throw new Error('Handle/domain must look like a domain (for example: alice.bsky.social).');
+      throw new Error('Handle/domain must look like a domain (for example: alice.example.com).');
     }
 
     const validHandle = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(handle);

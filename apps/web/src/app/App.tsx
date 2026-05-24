@@ -9,6 +9,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -67,8 +68,10 @@ const VOICE_CONNECT_URL = new URL('../../../../assets/audio/voice/voice_connect.
 const VOICE_LEAVE_URL = new URL('../../../../assets/audio/voice/voice_leave.mp3', import.meta.url).href;
 const MICROPHONE_ICON_URL = new URL('../../../../assets/microphone_icon/microphone.svg', import.meta.url).href;
 const MICROPHONE_MUTED_ICON_URL = new URL('../../../../assets/microphone_icon/microphone_muted.svg', import.meta.url).href;
+const DEFAULT_ATPROTO_PROVIDER = 'https://bsky.social';
 
 type AuthMode = 'atproto' | 'lan';
+type AtprotoProviderChoice = 'bluesky' | 'custom';
 type RegistrationMode = 'invite_only' | 'open_signup' | 'manual_approval';
 type GifProvider = 'klipy' | 'giphy';
 type GifFallbackProvider = 'none' | GifProvider;
@@ -126,6 +129,55 @@ const DEFAULT_DESKTOP_SOUND_SETTINGS: CurrentDesktopSoundSettings = {
   pushToTalkMode: 'hold',
   pushToTalkKey: 'Space',
 };
+
+function normalizeAtprotoDidInput(rawInput: string): string | null {
+  const trimmed = rawInput.trim();
+  if (!trimmed.toLowerCase().startsWith('did:')) {
+    return null;
+  }
+
+  const normalized = trimmed.toLowerCase();
+  if (/^did:plc:[a-z0-9._:%-]+$/.test(normalized)) {
+    return normalized;
+  }
+  if (/^did:web:[a-z0-9._~%:-]+$/.test(normalized)) {
+    return normalized;
+  }
+
+  throw new Error('Enter a supported AT Protocol DID: did:plc or did:web.');
+}
+
+function normalizeCustomAtprotoProviderAddress(rawInput: string): string {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    throw new Error('Enter a server address or DID.');
+  }
+
+  const did = normalizeAtprotoDidInput(trimmed);
+  if (did) {
+    return did;
+  }
+
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error('Enter a valid server address or DID.');
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Server address must use http:// or https://.');
+  }
+  if (!parsed.hostname || parsed.username || parsed.password) {
+    throw new Error('Enter a valid server address.');
+  }
+
+  parsed.pathname = '';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString().replace(/\/$/, '');
+}
 
 type SetupStatus = {
   configured: boolean;
@@ -199,6 +251,44 @@ type MemberUpdateGatewayPayload = {
   reason?: string;
 };
 
+type MessageNotificationPayload = {
+  mentionHandles?: string[];
+  replyToUserId?: string;
+};
+
+type MessageCreateGatewayPayload = {
+  message?: Message;
+  notification?: MessageNotificationPayload;
+};
+
+type ChannelNotificationLevel = 'default' | 'all' | 'mentions' | 'nothing';
+
+type ChannelNotificationSettingPayload = {
+  userId: string;
+  channelId: string;
+  notificationLevel: ChannelNotificationLevel;
+  mutedUntil?: string;
+  lastReadAt?: string;
+  updatedAt: string;
+};
+
+type ChannelNotificationSettingsResponse = {
+  items: ChannelNotificationSettingPayload[];
+};
+
+type ChannelNotificationSettingPatch = {
+  notificationLevel?: ChannelNotificationLevel;
+  mutedUntil?: string | null;
+};
+
+type NotificationUpdateGatewayPayload = {
+  action?: 'channel_read' | 'channel_notification_settings';
+  userId?: string;
+  channelId?: string;
+  readAt?: string;
+  settings?: ChannelNotificationSettingPayload;
+};
+
 type ServerRemovalNotice = {
   type: 'kick' | 'ban';
   message: string;
@@ -221,9 +311,27 @@ type ChannelListItem = {
   nested: boolean;
 };
 
+type CreatableChannelType = Extract<Channel['type'], 'text' | 'voice'>;
+
 type ChannelDropTarget = {
   channelId: string;
   edge: 'before' | 'after';
+  indicatorChannelId?: string;
+  indicatorEdge?: 'before' | 'after';
+};
+
+type ChannelDragPreview = {
+  x: number;
+  y: number;
+  offsetX: number;
+  offsetY: number;
+  width: number;
+};
+
+type ChannelsResizeHandleMetrics = {
+  left: number;
+  top: number;
+  height: number;
 };
 
 type AppContextMenu =
@@ -684,16 +792,43 @@ const TYPING_TTL_MS = 5_200;
 const RECENT_REACTION_STORAGE_KEY = 'current.recentReactionEmojis';
 const EMOJI_TONE_DEFAULTS_STORAGE_KEY = 'current.emojiToneDefaults';
 const CHANNELS_PANE_WIDTH_STORAGE_KEY = 'current.channelsPaneWidth';
+const CHANNEL_CATEGORY_COLLAPSE_STORAGE_KEY = 'current.collapsedChannelCategories';
 const MEMBERS_PANE_WIDTH_STORAGE_KEY = 'current.membersPaneWidth';
 const SERVER_REMOVAL_NOTICE_STORAGE_KEY = 'current.serverRemovalNotice';
 const EMOJI_LONG_PRESS_MS = 450;
 const DEFAULT_RECENT_REACTION_EMOJIS = ['👍', '❤️', '😂'];
 const DEFAULT_CHANNELS_PANE_WIDTH = 260;
 const MIN_CHANNELS_PANE_WIDTH = 220;
-const MAX_CHANNELS_PANE_WIDTH = 420;
+const MAX_CHANNELS_PANE_WIDTH = 560;
+const CHANNELS_PANE_EDGE_RESIZE_WIDTH = 16;
 const DEFAULT_MEMBERS_PANE_WIDTH = 300;
 const MIN_MEMBERS_PANE_WIDTH = 240;
 const MAX_MEMBERS_PANE_WIDTH = 420;
+const CHANNEL_NOTIFICATION_DEFAULT_LEVEL: Exclude<ChannelNotificationLevel, 'default'> = 'all';
+const CHANNEL_MUTE_OPTIONS: Array<{ id: string; label: string; durationMs: number | null }> = [
+  { id: '15m', label: 'For 15 Minutes', durationMs: 15 * 60 * 1000 },
+  { id: '1h', label: 'For 1 Hour', durationMs: 60 * 60 * 1000 },
+  { id: '3h', label: 'For 3 Hours', durationMs: 3 * 60 * 60 * 1000 },
+  { id: '8h', label: 'For 8 Hours', durationMs: 8 * 60 * 60 * 1000 },
+  { id: '24h', label: 'For 24 Hours', durationMs: 24 * 60 * 60 * 1000 },
+  { id: 'forever', label: 'Until I turn it back on', durationMs: null },
+];
+const CHANNEL_CREATE_TYPE_OPTIONS: Array<{
+  value: CreatableChannelType;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'text',
+    label: 'Text Channel',
+    description: 'Chat with messages, GIFs, files, replies, and pings.',
+  },
+  {
+    value: 'voice',
+    label: 'Voice Channel',
+    description: 'Create a room people can join for live voice.',
+  },
+];
 
 const PRESENCE_STATUS_OPTIONS: Array<{ value: UserPresenceStatus; label: string }> = [
   { value: 'online', label: 'Online' },
@@ -1199,7 +1334,7 @@ function compareChannelsForSidebar(a: Channel, b: Channel): number {
   return getChannelPosition(a) - getChannelPosition(b) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 }
 
-function buildChannelListItems(channels: Channel[]): ChannelListItem[] {
+function buildChannelListItems(channels: Channel[], collapsedCategoryIds = new Set<string>()): ChannelListItem[] {
   const sortedChannels = [...channels].sort(compareChannelsForSidebar);
   const categoriesById = new Map(
     sortedChannels
@@ -1230,6 +1365,9 @@ function buildChannelListItems(channels: Channel[]): ChannelListItem[] {
         kind: 'category',
         nested: false,
       });
+      if (collapsedCategoryIds.has(channel.id)) {
+        continue;
+      }
       for (const child of childrenByCategory.get(channel.id) ?? []) {
         items.push({
           id: child.id,
@@ -1256,6 +1394,22 @@ function buildChannelListItems(channels: Channel[]): ChannelListItem[] {
   return items;
 }
 
+function loadCollapsedChannelCategoryIds(): Set<string> {
+  if (typeof window === 'undefined') {
+    return new Set();
+  }
+  try {
+    const stored = window.localStorage.getItem(CHANNEL_CATEGORY_COLLAPSE_STORAGE_KEY);
+    const parsed = stored ? (JSON.parse(stored) as unknown) : null;
+    if (!Array.isArray(parsed)) {
+      return new Set();
+    }
+    return new Set(parsed.filter((value): value is string => typeof value === 'string' && value.length > 0));
+  } catch {
+    return new Set();
+  }
+}
+
 function getChannelLabelPrefix(channel: Channel): string {
   if (channel.type === 'voice') {
     return '◉';
@@ -1264,6 +1418,22 @@ function getChannelLabelPrefix(channel: Channel): string {
     return '@';
   }
   return '#';
+}
+
+function getCreatableChannelLabel(type: CreatableChannelType): string {
+  return type === 'voice' ? 'Voice Channel' : 'Text Channel';
+}
+
+function getDefaultChannelName(type: CreatableChannelType): string {
+  const suffix = Math.floor(Math.random() * 1000);
+  return type === 'voice' ? `voice-${suffix}` : `text-${suffix}`;
+}
+
+function getChannelCreatePrompt(type: CreatableChannelType, categoryName: string | null): string {
+  const channelKind = type === 'voice' ? 'voice channel' : 'text channel';
+  return categoryName
+    ? `Create a new ${channelKind} inside this category.`
+    : `Create a new ${channelKind}.`;
 }
 
 function getChannelsPaneMaxWidth(): number {
@@ -1437,6 +1607,56 @@ function normalizeReferenceToken(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizeNotificationHandle(value: string | undefined): string {
+  return normalizeReferenceToken((value ?? '').replace(/^@/, ''));
+}
+
+function effectiveChannelNotificationLevel(
+  level: ChannelNotificationLevel,
+): Exclude<ChannelNotificationLevel, 'default'> {
+  return level === 'default' ? CHANNEL_NOTIFICATION_DEFAULT_LEVEL : level;
+}
+
+function isChannelMuted(setting: ChannelNotificationSettingPayload | undefined, now = Date.now()): boolean {
+  if (!setting?.mutedUntil) {
+    return false;
+  }
+  const mutedUntil = Date.parse(setting.mutedUntil);
+  return Number.isFinite(mutedUntil) && mutedUntil > now;
+}
+
+function channelNotificationDescription(level: ChannelNotificationLevel): string | undefined {
+  if (level === 'default') {
+    return 'All Messages';
+  }
+  return undefined;
+}
+
+function messageMentionsCurrentUser(input: {
+  message: Message;
+  notification?: MessageNotificationPayload;
+  currentUser?: SessionPayload['user'];
+}): boolean {
+  const userHandle = normalizeNotificationHandle(input.currentUser?.handle);
+  if (!userHandle) {
+    return false;
+  }
+
+  for (const handle of input.notification?.mentionHandles ?? []) {
+    if (normalizeNotificationHandle(handle) === userHandle) {
+      return true;
+    }
+  }
+
+  for (const handle of extractNotificationMentionHandles(input.message.content ?? '')) {
+    if (normalizeNotificationHandle(handle) === userHandle) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function getMemberMentionToken(member: SessionPayload['user'] | MemberPayload): string {
   return `@${member.handle}`;
 }
@@ -1454,6 +1674,20 @@ function extractNotificationMentionHandles(content: string): string[] {
 
 function getChannelMentionToken(channel: Channel): string {
   return `#${channel.name}`;
+}
+
+function buildChannelLink(channelId: string): string {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('current_auth_ticket');
+  url.searchParams.set('channelId', channelId);
+  return url.toString();
+}
+
+function rememberChannelInUrl(channelId: string): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('current_auth_ticket');
+  url.searchParams.set('channelId', channelId);
+  window.history.replaceState(window.history.state, '', url);
 }
 
 function getActiveComposerReference(value: string, caretPosition: number): ComposerReferenceMatch | null {
@@ -1846,6 +2080,9 @@ export function App() {
   const [membersPaneWidth, setMembersPaneWidth] = useState(loadMembersPaneWidth);
   const [isResizingChannelsPane, setIsResizingChannelsPane] = useState(false);
   const [isResizingMembersPane, setIsResizingMembersPane] = useState(false);
+  const [isHoveringChannelsResizeHandle, setIsHoveringChannelsResizeHandle] = useState(false);
+  const [channelsResizeHandleMetrics, setChannelsResizeHandleMetrics] =
+    useState<ChannelsResizeHandleMetrics | null>(null);
   const [isOverLightBackground, setIsOverLightBackground] = useState(false);
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>('auto');
   const [resolvedAppearanceMode, setResolvedAppearanceMode] = useState<ResolvedAppearanceMode>(() =>
@@ -1862,6 +2099,11 @@ export function App() {
   } | null>(null);
   const [draggingChannelId, setDraggingChannelId] = useState<string | null>(null);
   const [channelDropTarget, setChannelDropTarget] = useState<ChannelDropTarget | null>(null);
+  const [channelDragPreview, setChannelDragPreview] = useState<ChannelDragPreview | null>(null);
+  const [collapsedChannelCategoryIds, setCollapsedChannelCategoryIds] = useState<Set<string>>(
+    () => loadCollapsedChannelCategoryIds(),
+  );
+  const [unreadChannelIds, setUnreadChannelIds] = useState<Set<string>>(() => new Set());
   const [messageHoverToolbar, setMessageHoverToolbar] = useState<{
     messageId: string;
     placement: MessageToolbarPlacement;
@@ -1959,6 +2201,56 @@ export function App() {
     return () => window.removeEventListener('resize', handleWindowResize);
   }, []);
 
+  const syncChannelsResizeHandleMetrics = useCallback(() => {
+    const pane = channelsPaneRef.current;
+    if (!pane || pane.offsetWidth <= 0 || pane.offsetHeight <= 0) {
+      setChannelsResizeHandleMetrics(null);
+      return;
+    }
+
+    const nextMetrics = {
+      left: Math.round(pane.offsetLeft + pane.offsetWidth - 12),
+      top: Math.round(pane.offsetTop + 18),
+      height: Math.max(1, Math.round(pane.offsetHeight - 36)),
+    };
+    setChannelsResizeHandleMetrics((previous) => (
+      previous?.left === nextMetrics.left &&
+      previous.top === nextMetrics.top &&
+      previous.height === nextMetrics.height
+        ? previous
+        : nextMetrics
+    ));
+  }, []);
+
+  useLayoutEffect(() => {
+    syncChannelsResizeHandleMetrics();
+  }, [channelsPaneWidth, syncChannelsResizeHandleMetrics]);
+
+  useEffect(() => {
+    syncChannelsResizeHandleMetrics();
+    window.addEventListener('resize', syncChannelsResizeHandleMetrics);
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(syncChannelsResizeHandleMetrics);
+    if (channelsPaneRef.current) {
+      resizeObserver?.observe(channelsPaneRef.current);
+    }
+    return () => {
+      window.removeEventListener('resize', syncChannelsResizeHandleMetrics);
+      resizeObserver?.disconnect();
+    };
+  }, [syncChannelsResizeHandleMetrics]);
+
+  const handleChannelsPaneRef = useCallback((node: HTMLElement | null) => {
+    channelsPaneRef.current = node;
+    if (!node) {
+      setChannelsResizeHandleMetrics(null);
+      return;
+    }
+
+    window.requestAnimationFrame(syncChannelsResizeHandleMetrics);
+  }, [syncChannelsResizeHandleMetrics]);
+
   useEffect(() => {
     if (!isPresenceMenuOpen) {
       return;
@@ -1983,13 +2275,7 @@ export function App() {
     };
   }, [isPresenceMenuOpen]);
 
-  const handleChannelsPaneResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) {
-      return;
-    }
-
-    event.preventDefault();
-    const startX = event.clientX;
+  const startChannelsPaneResize = useCallback((startX: number) => {
     const startWidth = channelsPaneWidth;
     setIsResizingChannelsPane(true);
 
@@ -2010,6 +2296,31 @@ export function App() {
     window.addEventListener('pointercancel', finishResize);
   }, [channelsPaneWidth]);
 
+  const handleChannelsPaneResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    startChannelsPaneResize(event.clientX);
+  }, [startChannelsPaneResize]);
+
+  const handleChannelsPanePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) {
+      return;
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const distanceFromRightEdge = bounds.right - event.clientX;
+    if (distanceFromRightEdge < 0 || distanceFromRightEdge > CHANNELS_PANE_EDGE_RESIZE_WIDTH) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    startChannelsPaneResize(event.clientX);
+  }, [startChannelsPaneResize]);
+
   const handleChannelsPaneResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       event.preventDefault();
@@ -2026,6 +2337,10 @@ export function App() {
       event.preventDefault();
       setChannelsPaneWidth(getChannelsPaneMaxWidth());
     }
+  }, []);
+
+  const handleChannelsPaneResizeDoubleClick = useCallback(() => {
+    setChannelsPaneWidth(clampChannelsPaneWidth(DEFAULT_CHANNELS_PANE_WIDTH));
   }, []);
 
   const handleMembersPaneResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2632,7 +2947,160 @@ export function App() {
     [channelsQuery.data?.pages],
   );
 
-  const channelListItems = useMemo(() => buildChannelListItems(channels), [channels]);
+  const channelNotificationSettingsQuery = useQuery({
+    queryKey: ['channel-notification-settings'],
+    queryFn: () => apiGet<ChannelNotificationSettingsResponse>('/api/v1/notification-settings/channels'),
+    enabled: configuredUserReady,
+  });
+
+  const channelNotificationSettingsById = useMemo(
+    () => new Map((channelNotificationSettingsQuery.data?.items ?? []).map((setting) => [setting.channelId, setting])),
+    [channelNotificationSettingsQuery.data?.items],
+  );
+
+  const upsertCachedChannelNotificationSetting = useCallback((setting: ChannelNotificationSettingPayload) => {
+    queryClient.setQueryData<ChannelNotificationSettingsResponse>(['channel-notification-settings'], (existing) => {
+      const items = existing?.items ?? [];
+      let replaced = false;
+      const nextItems = items.map((item) => {
+        if (item.channelId !== setting.channelId) {
+          return item;
+        }
+        replaced = true;
+        return setting;
+      });
+      return {
+        items: replaced ? nextItems : [...nextItems, setting],
+      };
+    });
+  }, [queryClient]);
+
+  const getChannelNotificationSetting = useCallback((channelId: string): ChannelNotificationSettingPayload => (
+    channelNotificationSettingsById.get(channelId) ?? {
+      userId: sessionQuery.data?.user.id ?? '',
+      channelId,
+      notificationLevel: 'default',
+      updatedAt: '',
+    }
+  ), [channelNotificationSettingsById, sessionQuery.data?.user.id]);
+
+  const markChannelRead = useCallback(async (channelId: string, readAt = new Date().toISOString()) => {
+    setUnreadChannelIds((previous) => {
+      if (!previous.has(channelId)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.delete(channelId);
+      return next;
+    });
+
+    const setting = await apiPut<ChannelNotificationSettingPayload>(
+      `/api/v1/channels/${channelId}/read`,
+      { readAt },
+    );
+    upsertCachedChannelNotificationSetting(setting);
+  }, [upsertCachedChannelNotificationSetting]);
+
+  const updateChannelNotificationSetting = useCallback(async (
+    channelId: string,
+    patch: ChannelNotificationSettingPatch,
+  ) => {
+    const setting = await apiPut<ChannelNotificationSettingPayload>(
+      `/api/v1/channels/${channelId}/notification-settings`,
+      patch,
+    );
+    upsertCachedChannelNotificationSetting(setting);
+  }, [upsertCachedChannelNotificationSetting]);
+
+  const shouldNotifyForMessage = useCallback((
+    message: Message,
+    notification?: MessageNotificationPayload,
+  ): boolean => {
+    if (message.authorId === sessionQuery.data?.user.id) {
+      return false;
+    }
+    const setting = getChannelNotificationSetting(message.channelId);
+    if (isChannelMuted(setting)) {
+      return false;
+    }
+    const level = effectiveChannelNotificationLevel(setting.notificationLevel);
+    if (level === 'nothing') {
+      return false;
+    }
+    if (level === 'mentions') {
+      return (
+        notification?.replyToUserId === sessionQuery.data?.user.id ||
+        messageMentionsCurrentUser({
+          message,
+          notification,
+          currentUser: sessionQuery.data?.user,
+        })
+      );
+    }
+    return true;
+  }, [getChannelNotificationSetting, sessionQuery.data?.user]);
+
+  const allChannelListItems = useMemo(() => buildChannelListItems(channels), [channels]);
+  const channelListItems = useMemo(
+    () => buildChannelListItems(channels, collapsedChannelCategoryIds),
+    [channels, collapsedChannelCategoryIds],
+  );
+  const draggingChannelItem = useMemo(
+    () => allChannelListItems.find((item) => item.channel.id === draggingChannelId) ?? null,
+    [allChannelListItems, draggingChannelId],
+  );
+  const channelChildCountByCategoryId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const channel of channels) {
+      if (channel.type !== 'category' && channel.categoryId) {
+        counts.set(channel.categoryId, (counts.get(channel.categoryId) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [channels]);
+
+  useEffect(() => {
+    const categoryIds = new Set(channels.filter((channel) => channel.type === 'category').map((channel) => channel.id));
+    setCollapsedChannelCategoryIds((previous) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const categoryId of previous) {
+        if (categoryIds.has(categoryId)) {
+          next.add(categoryId);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [channels]);
+
+  useEffect(() => {
+    const channelIds = new Set(channels.map((channel) => channel.id));
+    setUnreadChannelIds((previous) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const channelId of previous) {
+        if (channelIds.has(channelId)) {
+          next.add(channelId);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : previous;
+    });
+  }, [channels]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        CHANNEL_CATEGORY_COLLAPSE_STORAGE_KEY,
+        JSON.stringify([...collapsedChannelCategoryIds]),
+      );
+    } catch {
+      // Category collapse is a local sidebar preference.
+    }
+  }, [collapsedChannelCategoryIds]);
 
   const currentChannel = useMemo(
     () =>
@@ -2641,6 +3109,27 @@ export function App() {
       null,
     [channels, selectedChannelId],
   );
+
+  useEffect(() => {
+    if (selectedChannelId || channels.length === 0) {
+      return;
+    }
+    const linkedChannelId = new URLSearchParams(window.location.search).get('channelId');
+    if (!linkedChannelId) {
+      return;
+    }
+    const linkedChannel = channels.find((channel) => channel.id === linkedChannelId && channel.type !== 'category');
+    if (linkedChannel) {
+      setSelectedChannelId(linkedChannel.id);
+    }
+  }, [channels, selectedChannelId]);
+
+  useEffect(() => {
+    if (!currentChannel?.id || currentChannel.type === 'category') {
+      return;
+    }
+    void markChannelRead(currentChannel.id).catch(() => undefined);
+  }, [currentChannel?.id, currentChannel?.type, markChannelRead]);
 
   const openSearchModal = useCallback(() => {
     setSearchTab(isMessageChannel(currentChannel) ? 'messages' : 'users');
@@ -3269,7 +3758,7 @@ export function App() {
     }
 
     if (event.type === 'MESSAGE_CREATE') {
-      const payload = event.payload as { message?: Message };
+      const payload = event.payload as MessageCreateGatewayPayload;
       const message = payload.message;
       if (message?.channelId) {
         const existingMessages = queryClient.getQueryData<InfiniteData<PageResponse<Message>>>([
@@ -3285,9 +3774,9 @@ export function App() {
           authorId: message.authorId,
           currentUserId: sessionQuery.data?.user?.id,
           messageAlreadyCached,
-          willPlayNotification: !messageAlreadyCached && message.authorId !== sessionQuery.data?.user?.id,
+          willPlayNotification: !messageAlreadyCached && shouldNotifyForMessage(message, payload.notification),
         });
-        if (!messageAlreadyCached && message.authorId !== sessionQuery.data?.user?.id) {
+        if (!messageAlreadyCached && shouldNotifyForMessage(message, payload.notification)) {
           playIncomingMessageNotification();
         }
         const isIncomingForCurrentChannel =
@@ -3302,9 +3791,19 @@ export function App() {
 
           if (isAtBottom) {
             pendingScrollToBottomRef.current = true;
+            if (message.authorId !== sessionQuery.data?.user?.id) {
+              void markChannelRead(message.channelId).catch(() => undefined);
+            }
           } else {
             setNewMessageCount((previous) => previous + 1);
           }
+        } else if (message.authorId !== sessionQuery.data?.user?.id && shouldNotifyForMessage(message, payload.notification)) {
+          setUnreadChannelIds((previous) => {
+            if (previous.has(message.channelId)) {
+              return previous;
+            }
+            return new Set(previous).add(message.channelId);
+          });
         }
 
         queryClient.setQueryData<InfiniteData<PageResponse<Message>>>(
@@ -3369,6 +3868,29 @@ export function App() {
             ...previous,
             [channelId]: remaining,
           };
+        });
+      }
+      return;
+    }
+
+    if (event.type === 'NOTIFICATION_UPDATE') {
+      const payload = event.payload as NotificationUpdateGatewayPayload;
+      if (!payload.userId || payload.userId !== sessionQuery.data?.user?.id || !payload.channelId) {
+        return;
+      }
+      if (payload.settings) {
+        upsertCachedChannelNotificationSetting(payload.settings);
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ['channel-notification-settings'] });
+      }
+      if (payload.action === 'channel_read') {
+        setUnreadChannelIds((previous) => {
+          if (!previous.has(payload.channelId!)) {
+            return previous;
+          }
+          const next = new Set(previous);
+          next.delete(payload.channelId!);
+          return next;
         });
       }
       return;
@@ -3502,13 +4024,16 @@ export function App() {
     }
   }, [
     currentChannel?.id,
+    markChannelRead,
     playVoiceConnectSound,
     playVoiceLeaveSound,
     queryClient,
     playIncomingMessageNotification,
     removeCachedMember,
     sessionQuery.data?.user?.id,
+    shouldNotifyForMessage,
     updateCachedMessage,
+    upsertCachedChannelNotificationSetting,
     updatePresenceCache,
     voiceClient.handleGatewayEvent,
   ]));
@@ -4794,22 +5319,32 @@ export function App() {
     await queryClient.invalidateQueries({ queryKey: ['voice-state'] });
   }, [actionModal, queryClient, selectedChannelId]);
 
-  const handleToggleChannelLock = useCallback(async (channel: Channel) => {
-    if (channel.type === 'category') {
+  const handleCreateChannel = useCallback(async (
+    category?: Channel | null,
+    requestedType?: CreatableChannelType,
+  ) => {
+    const categoryId = category?.type === 'category' ? category.id : null;
+    const categoryName = category?.type === 'category' ? category.name : null;
+    const selectedType =
+      requestedType ??
+      (await actionModal.choice({
+        title: categoryName ? `Create Channel In ${categoryName}` : 'Create Channel',
+        message: 'Choose what kind of channel to create.',
+        options: CHANNEL_CREATE_TYPE_OPTIONS,
+        defaultValue: 'text',
+        confirmLabel: 'Continue',
+      }) as CreatableChannelType | null);
+
+    if (!selectedType) {
       return;
     }
-    await apiPatch(`/api/v1/channels/${channel.id}/moderation`, {
-      locked: !channel.locked,
-      slowmodeSeconds: channel.slowmodeSeconds,
-    });
-    await queryClient.invalidateQueries({ queryKey: ['channels'] });
-  }, [queryClient]);
 
-  const handleCreateChannel = useCallback(async () => {
     const channelName = await actionModal.textInput({
-      title: 'Create Channel',
-      message: 'Create a new text channel.',
-      defaultValue: `text-${Math.floor(Math.random() * 1000)}`,
+      title: categoryName
+        ? `Create ${getCreatableChannelLabel(selectedType)} In ${categoryName}`
+        : `Create ${getCreatableChannelLabel(selectedType)}`,
+      message: getChannelCreatePrompt(selectedType, categoryName),
+      defaultValue: getDefaultChannelName(selectedType),
       placeholder: 'channel-name',
       required: true,
       confirmLabel: 'Create',
@@ -4818,10 +5353,54 @@ export function App() {
       return;
     }
 
-    await apiPost('/api/v1/channels', {
+    await apiPost<Channel>('/api/v1/channels', {
       name: channelName,
-      type: 'text',
+      type: selectedType,
+      categoryId: categoryId ?? undefined,
     });
+    if (categoryId) {
+      setCollapsedChannelCategoryIds((previous) => {
+        if (!previous.has(categoryId)) {
+          return previous;
+        }
+        const next = new Set(previous);
+        next.delete(categoryId);
+        return next;
+      });
+    }
+    await queryClient.invalidateQueries({ queryKey: ['channels'] });
+  }, [actionModal, queryClient]);
+
+  const handleDuplicateChannel = useCallback(async (channel: Channel) => {
+    if (channel.type === 'category') {
+      return;
+    }
+    const channelName = await actionModal.textInput({
+      title: 'Duplicate Channel',
+      message: `Create a copy of ${getChannelLabelPrefix(channel)}${channel.name}.`,
+      defaultValue: `${channel.name}-copy`,
+      placeholder: 'channel-name',
+      required: true,
+      confirmLabel: 'Duplicate',
+    });
+    if (!channelName) {
+      return;
+    }
+
+    const duplicate = await apiPost<Channel>('/api/v1/channels', {
+      name: channelName,
+      type: channel.type,
+      categoryId: channel.categoryId,
+      topic: channel.topic,
+      slowmodeSeconds: channel.slowmodeSeconds,
+      position: channel.position + 1,
+    });
+    if (channel.locked) {
+      await apiPatch(`/api/v1/channels/${duplicate.id}/moderation`, {
+        locked: channel.locked,
+        slowmodeSeconds: channel.slowmodeSeconds,
+      });
+    }
     await queryClient.invalidateQueries({ queryKey: ['channels'] });
   }, [actionModal, queryClient]);
 
@@ -4854,16 +5433,16 @@ export function App() {
       return;
     }
 
-    const draggedItem = channelListItems.find((item) => item.channel.id === draggedChannelId);
+    const draggedItem = allChannelListItems.find((item) => item.channel.id === draggedChannelId);
     if (!draggedItem) {
       return;
     }
 
     const movingIds = new Set<string>([draggedChannelId]);
     if (draggedItem.channel.type === 'category') {
-      for (const item of channelListItems) {
-        if (item.channel.categoryId === draggedChannelId) {
-          movingIds.add(item.channel.id);
+      for (const channel of channels) {
+        if (channel.categoryId === draggedChannelId) {
+          movingIds.add(channel.id);
         }
       }
     }
@@ -4871,8 +5450,8 @@ export function App() {
       return;
     }
 
-    const movingItems = channelListItems.filter((item) => movingIds.has(item.channel.id));
-    const remainingItems = channelListItems.filter((item) => !movingIds.has(item.channel.id));
+    const movingItems = allChannelListItems.filter((item) => movingIds.has(item.channel.id));
+    const remainingItems = allChannelListItems.filter((item) => !movingIds.has(item.channel.id));
     const targetIndex = remainingItems.findIndex((item) => item.channel.id === targetChannelId);
     if (targetIndex < 0) {
       return;
@@ -4903,57 +5482,354 @@ export function App() {
 
     await apiPut<{ items: Channel[] }>('/api/v1/channels/order', { items });
     await queryClient.invalidateQueries({ queryKey: ['channels'] });
-  }, [canManageChannels, channelListItems, queryClient]);
+  }, [allChannelListItems, canManageChannels, channels, queryClient]);
 
-  const handleChannelDragStart = useCallback((event: ReactDragEvent, channel: Channel) => {
+  const movingChannelIdsForDrag = useCallback((draggedChannelId: string) => {
+    const movingIds = new Set<string>([draggedChannelId]);
+    const draggedChannel = channels.find((channel) => channel.id === draggedChannelId);
+    if (draggedChannel?.type === 'category') {
+      for (const channel of channels) {
+        if (channel.categoryId === draggedChannelId) {
+          movingIds.add(channel.id);
+        }
+      }
+    }
+    return movingIds;
+  }, [channels]);
+
+  const updateChannelDragPointer = useCallback((clientX: number, clientY: number) => {
+    if (!clientX && !clientY) {
+      return;
+    }
+
+    setChannelDragPreview((previous) => (
+      previous
+        ? {
+            ...previous,
+            x: clientX,
+            y: clientY,
+          }
+        : previous
+    ));
+  }, []);
+
+  const maybeScrollChannelListDuringDrag = useCallback((clientY: number) => {
+    const element = channelsListRef.current;
+    if (!element) {
+      return;
+    }
+
+    const bounds = element.getBoundingClientRect();
+    const edgeSize = 44;
+    const maxSpeed = 18;
+    if (clientY < bounds.top + edgeSize) {
+      const strength = (bounds.top + edgeSize - clientY) / edgeSize;
+      element.scrollBy({ top: -Math.ceil(maxSpeed * strength) });
+    } else if (clientY > bounds.bottom - edgeSize) {
+      const strength = (clientY - (bounds.bottom - edgeSize)) / edgeSize;
+      element.scrollBy({ top: Math.ceil(maxSpeed * strength) });
+    }
+  }, []);
+
+  const updateChannelDropTargetFromPointer = useCallback((
+    clientX: number,
+    clientY: number,
+    draggedChannelId: string,
+  ): ChannelDropTarget | null => {
+    const listElement = channelsListRef.current;
+    if (!listElement) {
+      setChannelDropTarget(null);
+      return null;
+    }
+
+    const listBounds = listElement.getBoundingClientRect();
+    const pointerOutsideList =
+      clientX < listBounds.left - 48 ||
+      clientX > listBounds.right + 48 ||
+      clientY < listBounds.top - 36 ||
+      clientY > listBounds.bottom + 36;
+    if (pointerOutsideList) {
+      setChannelDropTarget(null);
+      return null;
+    }
+
+    const draggedItem = allChannelListItems.find((item) => item.channel.id === draggedChannelId);
+    const draggingCategory = draggedItem?.channel.type === 'category';
+    const movingIds = movingChannelIdsForDrag(draggedChannelId);
+    const availableEntries = Array.from(
+      listElement.querySelectorAll<HTMLElement>('.channel-entry[data-channel-entry-id]'),
+    ).filter((entry) => !movingIds.has(entry.dataset.channelEntryId ?? ''));
+    if (draggingCategory) {
+      let nestedBlockTop: number | null = null;
+      let nestedBlockBottom = 0;
+      let previousTopLevelBottom: number | null = null;
+      let hoveringNestedBlock = false;
+      const finishNestedBlock = () => {
+        if (nestedBlockTop !== null && clientY >= nestedBlockTop && clientY <= nestedBlockBottom) {
+          hoveringNestedBlock = true;
+        }
+        nestedBlockTop = null;
+        nestedBlockBottom = 0;
+      };
+
+      for (const entry of availableEntries) {
+        const bounds = entry.getBoundingClientRect();
+        if (entry.dataset.channelEntryNested === 'true') {
+          nestedBlockTop ??= previousTopLevelBottom ?? bounds.top;
+          nestedBlockBottom = bounds.bottom;
+          continue;
+        }
+        finishNestedBlock();
+        if (hoveringNestedBlock) {
+          break;
+        }
+        previousTopLevelBottom = bounds.bottom;
+      }
+      finishNestedBlock();
+      if (hoveringNestedBlock) {
+        setChannelDropTarget(null);
+        return null;
+      }
+    }
+
+    const candidateEntries = draggingCategory
+      ? availableEntries.filter((entry) => entry.dataset.channelEntryNested !== 'true')
+      : availableEntries;
+
+    if (candidateEntries.length === 0) {
+      setChannelDropTarget(null);
+      return null;
+    }
+
+    let nextTarget: ChannelDropTarget | null = null;
+    for (const entry of candidateEntries) {
+      const bounds = entry.getBoundingClientRect();
+      const midpoint = bounds.top + bounds.height / 2;
+      if (clientY <= midpoint) {
+        nextTarget = {
+          channelId: entry.dataset.channelEntryId ?? '',
+          edge: 'before',
+        };
+        break;
+      }
+      if (clientY <= bounds.bottom) {
+        nextTarget = {
+          channelId: entry.dataset.channelEntryId ?? '',
+          edge: 'after',
+        };
+        break;
+      }
+    }
+
+    if (!nextTarget) {
+      const lastEntry = candidateEntries[candidateEntries.length - 1];
+      nextTarget = {
+        channelId: lastEntry?.dataset.channelEntryId ?? '',
+        edge: 'after',
+      };
+    }
+
+    if (!nextTarget?.channelId) {
+      setChannelDropTarget(null);
+      return null;
+    }
+
+    let resolvedTarget = nextTarget;
+    if (draggingCategory && resolvedTarget.edge === 'after') {
+      const targetItemIndex = allChannelListItems.findIndex((item) => item.channel.id === resolvedTarget.channelId);
+      const targetItem = allChannelListItems[targetItemIndex];
+      if (targetItem?.channel.type === 'category') {
+        const targetCategoryId = targetItem.channel.id;
+        let blockEndItem = targetItem;
+        for (const item of allChannelListItems.slice(targetItemIndex + 1)) {
+          if (!item.nested || item.channel.categoryId !== targetCategoryId) {
+            break;
+          }
+          blockEndItem = item;
+        }
+
+        const visibleTargetIndex = channelListItems.findIndex((item) => item.channel.id === targetCategoryId);
+        let indicatorItem = targetItem;
+        if (visibleTargetIndex >= 0) {
+          for (const item of channelListItems.slice(visibleTargetIndex + 1)) {
+            if (!item.nested || item.channel.categoryId !== targetCategoryId) {
+              break;
+            }
+            indicatorItem = item;
+          }
+        }
+
+        resolvedTarget = {
+          channelId: blockEndItem.channel.id,
+          edge: 'after',
+          indicatorChannelId: indicatorItem.channel.id,
+          indicatorEdge: 'after',
+        };
+      }
+    }
+
+    setChannelDropTarget((previous) => (
+      previous?.channelId === resolvedTarget.channelId &&
+      previous.edge === resolvedTarget.edge &&
+      previous.indicatorChannelId === resolvedTarget.indicatorChannelId &&
+      previous.indicatorEdge === resolvedTarget.indicatorEdge
+        ? previous
+        : resolvedTarget
+    ));
+    return resolvedTarget;
+  }, [allChannelListItems, channelListItems, movingChannelIdsForDrag]);
+
+  const resetChannelDragState = useCallback(() => {
+    setDraggingChannelId(null);
+    setChannelDropTarget(null);
+    setChannelDragPreview(null);
+  }, []);
+
+  const handleChannelDragStart = useCallback((event: ReactDragEvent<HTMLElement>, channel: Channel) => {
     if (!canManageChannels) {
       event.preventDefault();
       return;
     }
+    const bounds = event.currentTarget.getBoundingClientRect();
     event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('application/x-current-channel-id', channel.id);
     event.dataTransfer.setData('text/plain', channel.id);
+    const dragImage = document.createElement('span');
+    dragImage.className = 'channel-drag-native-ghost';
+    document.body.append(dragImage);
+    event.dataTransfer.setDragImage(dragImage, 0, 0);
+    window.setTimeout(() => dragImage.remove(), 0);
     setDraggingChannelId(channel.id);
+    setChannelDropTarget(null);
+    setChannelDragPreview({
+      x: event.clientX || bounds.left + bounds.width / 2,
+      y: event.clientY || bounds.top + bounds.height / 2,
+      offsetX: clampNumber((event.clientX || bounds.left + 14) - bounds.left, 10, bounds.width - 10),
+      offsetY: clampNumber((event.clientY || bounds.top + bounds.height / 2) - bounds.top, 8, bounds.height - 8),
+      width: bounds.width,
+    });
   }, [canManageChannels]);
 
-  const handleChannelDragOver = useCallback((event: ReactDragEvent<HTMLElement>, channel: Channel) => {
-    if (!canManageChannels || !draggingChannelId || draggingChannelId === channel.id) {
+  const handleChannelListDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!canManageChannels || !draggingChannelId) {
+      return;
+    }
+    updateChannelDragPointer(event.clientX, event.clientY);
+    maybeScrollChannelListDuringDrag(event.clientY);
+    const nextTarget = updateChannelDropTargetFromPointer(event.clientX, event.clientY, draggingChannelId);
+    if (!nextTarget) {
       return;
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const edge = event.clientY > bounds.top + bounds.height / 2 ? 'after' : 'before';
-    setChannelDropTarget((previous) => (
-      previous?.channelId === channel.id && previous.edge === edge
-        ? previous
-        : { channelId: channel.id, edge }
-    ));
-  }, [canManageChannels, draggingChannelId]);
+  }, [
+    canManageChannels,
+    draggingChannelId,
+    maybeScrollChannelListDuringDrag,
+    updateChannelDragPointer,
+    updateChannelDropTargetFromPointer,
+  ]);
 
-  const handleChannelDrop = useCallback((event: ReactDragEvent<HTMLElement>, channel: Channel) => {
+  const handleChannelListDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    const draggedChannelId = draggingChannelId ?? event.dataTransfer.getData('text/plain');
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const edge = channelDropTarget?.channelId === channel.id
-      ? channelDropTarget.edge
-      : event.clientY > bounds.top + bounds.height / 2 ? 'after' : 'before';
-    setDraggingChannelId(null);
-    setChannelDropTarget(null);
-    if (!draggedChannelId) {
+    const draggedChannelId =
+      draggingChannelId ||
+      event.dataTransfer.getData('application/x-current-channel-id') ||
+      event.dataTransfer.getData('text/plain');
+    const target = draggedChannelId
+      ? channelDropTarget ?? updateChannelDropTargetFromPointer(event.clientX, event.clientY, draggedChannelId)
+      : null;
+    resetChannelDragState();
+    if (!draggedChannelId || !target) {
       return;
     }
-    void persistChannelDrop(draggedChannelId, channel.id, edge);
-  }, [channelDropTarget?.channelId, channelDropTarget?.edge, draggingChannelId, persistChannelDrop]);
+    void persistChannelDrop(draggedChannelId, target.channelId, target.edge);
+  }, [
+    channelDropTarget,
+    draggingChannelId,
+    persistChannelDrop,
+    resetChannelDragState,
+    updateChannelDropTargetFromPointer,
+  ]);
 
   const handleChannelDragEnd = useCallback(() => {
-    setDraggingChannelId(null);
-    setChannelDropTarget(null);
+    resetChannelDragState();
+  }, [resetChannelDragState]);
+
+  useEffect(() => {
+    if (!draggingChannelId) {
+      return;
+    }
+
+    const handleWindowDragOver = (event: DragEvent) => {
+      if (!event.clientX && !event.clientY) {
+        return;
+      }
+      updateChannelDragPointer(event.clientX, event.clientY);
+      maybeScrollChannelListDuringDrag(event.clientY);
+      updateChannelDropTargetFromPointer(event.clientX, event.clientY, draggingChannelId);
+    };
+    const handleWindowDrop = () => resetChannelDragState();
+
+    window.addEventListener('dragover', handleWindowDragOver);
+    window.addEventListener('drop', handleWindowDrop);
+    return () => {
+      window.removeEventListener('dragover', handleWindowDragOver);
+      window.removeEventListener('drop', handleWindowDrop);
+    };
+  }, [
+    draggingChannelId,
+    maybeScrollChannelListDuringDrag,
+    resetChannelDragState,
+    updateChannelDragPointer,
+    updateChannelDropTargetFromPointer,
+  ]);
+
+  const handleToggleCategoryCollapse = useCallback((categoryId: string) => {
+    setCollapsedChannelCategoryIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(categoryId)) {
+        next.delete(categoryId);
+      } else {
+        next.add(categoryId);
+      }
+      return next;
+    });
   }, []);
 
-  const handleCreateInvite = useCallback(async () => {
-    const invite = await apiPost<{ code: string }>('/api/v1/invites', {});
+  const handleCreateInvite = useCallback(async (channel?: Channel | null) => {
+    const invite = await apiPost<{ code: string }>('/api/v1/invites', {
+      ...(channel && channel.type !== 'category' ? { channelId: channel.id } : {}),
+    });
     await copyToClipboard(invite.code, 'Invite code');
   }, [copyToClipboard]);
+
+  const handleMarkChannelRead = useCallback(async (channel: Channel) => {
+    if (channel.type === 'category') {
+      return;
+    }
+    await markChannelRead(channel.id);
+  }, [markChannelRead]);
+
+  const handleMuteChannel = useCallback(async (channel: Channel, durationMs: number | null) => {
+    if (channel.type === 'category') {
+      return;
+    }
+    const mutedUntil = durationMs === null
+      ? new Date('9999-12-31T23:59:59.000Z').toISOString()
+      : new Date(Date.now() + durationMs).toISOString();
+    await updateChannelNotificationSetting(channel.id, { mutedUntil });
+  }, [updateChannelNotificationSetting]);
+
+  const handleChannelNotificationLevel = useCallback(async (
+    channel: Channel,
+    notificationLevel: ChannelNotificationLevel,
+  ) => {
+    if (channel.type === 'category') {
+      return;
+    }
+    await updateChannelNotificationSetting(channel.id, { notificationLevel });
+  }, [updateChannelNotificationSetting]);
 
   const handleMemberAction = useCallback(async (
     memberId: string,
@@ -5047,6 +5923,8 @@ export function App() {
       return;
     }
     setSelectedChannelId(channel.id);
+    rememberChannelInUrl(channel.id);
+    void markChannelRead(channel.id).catch(() => undefined);
     if (channel.type !== 'voice') {
       return;
     }
@@ -5054,7 +5932,7 @@ export function App() {
       return;
     }
     joinVoiceMutation.mutate(channel.id);
-  }, [connectedVoiceChannelId, joinVoiceMutation]);
+  }, [connectedVoiceChannelId, joinVoiceMutation, markChannelRead]);
 
   const updateVoiceState = useCallback((input: Partial<Pick<VoiceState, 'muted' | 'deafened' | 'pushToTalk' | 'speaking'>>) => {
     if (!selfVoiceState) {
@@ -5634,24 +6512,21 @@ export function App() {
               id: 'create-channel',
               label: 'Create Channel',
               icon: '+',
-              disabled: !canManageChannels,
-              disabledReason: 'Need MANAGE_CHANNELS permission.',
+              hidden: !canManageChannels,
               run: runMenuAction(handleCreateChannel),
             },
             {
               id: 'create-category',
               label: 'Create Category',
               icon: '▾',
-              disabled: !canManageChannels,
-              disabledReason: 'Need MANAGE_CHANNELS permission.',
+              hidden: !canManageChannels,
               run: runMenuAction(handleCreateCategory),
             },
             {
               id: 'create-invite',
               label: 'Create Invite',
               icon: '✉',
-              disabled: !canManageServer,
-              disabledReason: 'Need MANAGE_SERVER permission.',
+              hidden: !canManageServer,
               run: runMenuAction(handleCreateInvite),
             },
           ],
@@ -5675,11 +6550,24 @@ export function App() {
       const channel = context.channel;
       const connectedHere = connectedVoiceChannelId === channel.id;
       const isCategory = channel.type === 'category';
+      const parentCategory = isCategory
+        ? channel
+        : channels.find((candidate) => candidate.id === channel.categoryId && candidate.type === 'category') ?? null;
+      const setting = getChannelNotificationSetting(channel.id);
+      const notificationLevel = setting.notificationLevel;
+      const muted = isChannelMuted(setting);
+      const hasUnread = unreadChannelIds.has(channel.id);
       return [
         {
-          id: 'channel-primary',
-          title: 'Channel',
+          id: 'channel-read',
           items: [
+            {
+              id: 'mark-channel-read',
+              label: 'Mark As Read',
+              hidden: isCategory,
+              disabled: !hasUnread,
+              run: runMenuAction(() => handleMarkChannelRead(channel)),
+            },
             {
               id: 'join-voice',
               label: connectedHere ? 'Disconnect' : 'Join Voice',
@@ -5693,50 +6581,111 @@ export function App() {
                 joinVoiceMutation.mutate(channel.id);
               }),
             },
+          ],
+        },
+        {
+          id: 'channel-share',
+          items: [
             {
-              id: 'copy-channel-mention',
-              label: 'Copy Channel Mention',
-              icon: '#',
-              hidden: !isMessageChannel(channel),
-              run: runMenuAction(() => copyToClipboard(getChannelMentionToken(channel), 'Channel mention')),
+              id: 'invite-to-channel',
+              label: 'Invite to Channel',
+              hidden: isCategory || !canManageServer,
+              run: runMenuAction(() => handleCreateInvite(channel)),
             },
             {
-              id: 'copy-channel-id',
-              label: 'Copy Channel ID',
-              icon: '⌘',
-              run: runMenuAction(() => copyToClipboard(channel.id, 'Channel ID')),
+              id: 'copy-channel-link',
+              label: 'Copy Link',
+              hidden: isCategory,
+              run: runMenuAction(() => copyToClipboard(buildChannelLink(channel.id), 'Channel link')),
+            },
+          ],
+        },
+        {
+          id: 'channel-notifications',
+          items: [
+            {
+              id: 'mute-channel',
+              label: 'Mute Channel',
+              hidden: isCategory,
+              children: [
+                {
+                  id: 'unmute-channel',
+                  label: 'Turn Mute Off',
+                  hidden: !muted,
+                  run: runMenuAction(() => updateChannelNotificationSetting(channel.id, { mutedUntil: null })),
+                },
+                ...CHANNEL_MUTE_OPTIONS.map((option) => ({
+                  id: `mute-${option.id}`,
+                  label: option.label,
+                  run: runMenuAction(() => handleMuteChannel(channel, option.durationMs)),
+                })),
+              ],
+            },
+            {
+              id: 'notification-settings',
+              label: 'Notification Settings',
+              description: channelNotificationDescription(notificationLevel),
+              hidden: isCategory,
+              children: ([
+                ['default', 'Use Server Default'] as const,
+                ['all', 'All Messages'] as const,
+                ['mentions', 'Only @mentions'] as const,
+                ['nothing', 'Nothing'] as const,
+              ]).map(([level, label]) => ({
+                id: `notification-${level}`,
+                label,
+                description: channelNotificationDescription(level),
+                checked: notificationLevel === level,
+                selectionIndicator: 'radio' as const,
+                run: runMenuAction(() => handleChannelNotificationLevel(channel, level)),
+              })),
             },
           ],
         },
         {
           id: 'channel-manage',
-          title: 'Manage',
           items: [
             {
               id: 'edit-channel',
               label: isCategory ? 'Edit Category' : 'Edit Channel',
-              icon: '✎',
-              disabled: !canManageChannels,
-              disabledReason: 'Need MANAGE_CHANNELS permission.',
+              hidden: !canManageChannels,
               run: runMenuAction(() => handleRenameChannel(channel)),
             },
             {
-              id: 'toggle-lock',
-              label: channel.locked ? 'Unlock Channel' : 'Lock Channel',
-              icon: channel.locked ? '□' : '■',
-              hidden: isCategory,
-              disabled: !canManageChannels,
-              disabledReason: 'Need MANAGE_CHANNELS permission.',
-              run: runMenuAction(() => handleToggleChannelLock(channel)),
+              id: 'duplicate-channel',
+              label: 'Duplicate Channel',
+              hidden: isCategory || !canManageChannels,
+              run: runMenuAction(() => handleDuplicateChannel(channel)),
+            },
+            {
+              id: 'create-text-channel',
+              label: 'Create Text Channel',
+              hidden: !canManageChannels,
+              run: runMenuAction(() => handleCreateChannel(parentCategory, 'text')),
+            },
+            {
+              id: 'create-voice-channel',
+              label: 'Create Voice Channel',
+              hidden: !canManageChannels,
+              run: runMenuAction(() => handleCreateChannel(parentCategory, 'voice')),
             },
             {
               id: 'delete-channel',
               label: isCategory ? 'Delete Category' : 'Delete Channel',
-              icon: '×',
               variant: 'danger',
-              disabled: !canManageChannels,
-              disabledReason: 'Need MANAGE_CHANNELS permission.',
+              hidden: !canManageChannels,
               run: runMenuAction(() => handleDeleteChannel(channel)),
+            },
+          ],
+        },
+        {
+          id: 'channel-copy',
+          items: [
+            {
+              id: 'copy-channel-id',
+              label: 'Copy Channel ID',
+              shortcut: 'ID',
+              run: runMenuAction(() => copyToClipboard(channel.id, 'Channel ID')),
             },
           ],
         },
@@ -5926,7 +6875,7 @@ export function App() {
 
   return (
     <div
-      className={`shell ${isOverLightBackground ? 'over-light-background' : ''} ${isResizingChannelsPane ? 'resizing-channels' : ''} ${isResizingMembersPane ? 'resizing-members' : ''}`}
+      className={`shell ${isOverLightBackground ? 'over-light-background' : ''} ${isResizingChannelsPane ? 'resizing-channels' : ''} ${isHoveringChannelsResizeHandle ? 'channels-resize-hover' : ''} ${isResizingMembersPane ? 'resizing-members' : ''} ${draggingChannelId ? 'channel-drag-active' : ''}`}
       data-appearance-mode={appearanceMode}
       data-resolved-appearance={resolvedAppearanceMode}
       style={{
@@ -5953,7 +6902,21 @@ export function App() {
           />
         ))}
       </div>
-      <aside className="channels-pane glass-panel" ref={channelsPaneRef}>
+      <aside
+        className="channels-pane glass-panel"
+        ref={handleChannelsPaneRef}
+        onPointerDownCapture={handleChannelsPanePointerDownCapture}
+        onContextMenu={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (
+            target?.closest('.channel-entry, .voice-box, button, a, input, textarea, select, [role="button"]')
+          ) {
+            return;
+          }
+          const menuContext: AppContextMenu = { kind: 'server' };
+          contextMenu.open(event, menuContext, contextMenuSections(menuContext));
+        }}
+      >
         <header>
           <h2>Channels</h2>
           <div className="channels-header-actions">
@@ -5997,15 +6960,34 @@ export function App() {
           </div>
         </header>
 
-        <div className="channel-list" ref={channelsListRef} onScroll={handleChannelListScroll}>
+        <div
+          className={`channel-list ${draggingChannelId ? 'dragging-channels' : ''}`}
+          ref={channelsListRef}
+          onScroll={handleChannelListScroll}
+          onDragOver={handleChannelListDragOver}
+          onDrop={handleChannelListDrop}
+          onContextMenu={(event) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest('.channel-entry')) {
+              return;
+            }
+            const menuContext: AppContextMenu = { kind: 'server' };
+            contextMenu.open(event, menuContext, contextMenuSections(menuContext));
+          }}
+        >
           {channelListItems.map((item) => {
             const channel = item.channel;
             const isCategory = item.kind === 'category';
             const channelVoiceStates = channel.type === 'voice' ? voiceStatesByChannelId.get(channel.id) ?? [] : [];
             const connectedHere = connectedVoiceChannelId === channel.id;
             const showVoiceRoster = channel.type === 'voice' && (currentChannel?.id === channel.id || connectedHere);
-            const dropClassName = channelDropTarget?.channelId === channel.id
-              ? `drop-${channelDropTarget.edge}`
+            const isCategoryCollapsed = isCategory && collapsedChannelCategoryIds.has(channel.id);
+            const categoryChildCount = isCategory ? channelChildCountByCategoryId.get(channel.id) ?? 0 : 0;
+            const isUnread = unreadChannelIds.has(channel.id);
+            const dropIndicatorChannelId = channelDropTarget?.indicatorChannelId ?? channelDropTarget?.channelId;
+            const dropIndicatorEdge = channelDropTarget?.indicatorEdge ?? channelDropTarget?.edge;
+            const dropClassName = dropIndicatorChannelId === channel.id && dropIndicatorEdge
+              ? `drop-${dropIndicatorEdge}`
               : '';
             const entryClassName = [
               'channel-entry',
@@ -6023,12 +7005,15 @@ export function App() {
                 <div
                   key={channel.id}
                   className={entryClassName}
-                  onDragOver={(event) => handleChannelDragOver(event, channel)}
-                  onDrop={(event) => handleChannelDrop(event, channel)}
+                  data-channel-entry-id={channel.id}
+                  data-channel-entry-kind={item.kind}
+                  data-channel-entry-nested={item.nested ? 'true' : 'false'}
+                  onContextMenu={(event) => {
+                    contextMenu.open(event, menuContext, contextMenuSections(menuContext));
+                  }}
                 >
-                  <button
-                    type="button"
-                    className="channel-category"
+                  <div
+                    className="channel-category-row"
                     draggable={canManageChannels}
                     aria-grabbed={draggingChannelId === channel.id}
                     onDragStart={(event) => handleChannelDragStart(event, channel)}
@@ -6037,9 +7022,32 @@ export function App() {
                       contextMenu.open(event, menuContext, contextMenuSections(menuContext));
                     }}
                   >
-                    <span className="channel-category-caret">▾</span>
-                    <span className="channel-label">{channel.name}</span>
-                  </button>
+                    <button
+                      type="button"
+                      className="channel-category"
+                      aria-expanded={!isCategoryCollapsed}
+                      aria-label={`${isCategoryCollapsed ? 'Expand' : 'Collapse'} ${channel.name}`}
+                      onClick={() => handleToggleCategoryCollapse(channel.id)}
+                    >
+                      <span className="channel-category-caret">▾</span>
+                      <span className="channel-label">{channel.name}</span>
+                      <span className="channel-category-count">{categoryChildCount}</span>
+                    </button>
+                    {canManageChannels && (
+                      <button
+                        type="button"
+                        className="channel-category-add"
+                        title={`Create channel in ${channel.name}`}
+                        aria-label={`Create channel in ${channel.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleCreateChannel(channel);
+                        }}
+                      >
+                        +
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             }
@@ -6048,12 +7056,16 @@ export function App() {
               <div
                 key={channel.id}
                 className={entryClassName}
-                onDragOver={(event) => handleChannelDragOver(event, channel)}
-                onDrop={(event) => handleChannelDrop(event, channel)}
+                data-channel-entry-id={channel.id}
+                data-channel-entry-kind={item.kind}
+                data-channel-entry-nested={item.nested ? 'true' : 'false'}
+                onContextMenu={(event) => {
+                  contextMenu.open(event, menuContext, contextMenuSections(menuContext));
+                }}
               >
                 <button
                   type="button"
-                  className={`channel-item ${currentChannel?.id === channel.id ? 'active' : ''}`}
+                  className={`channel-item ${currentChannel?.id === channel.id ? 'active' : ''} ${isUnread ? 'unread' : ''}`}
                   draggable={canManageChannels}
                   aria-grabbed={draggingChannelId === channel.id}
                   onClick={() => handleSelectChannel(channel)}
@@ -6217,6 +7229,7 @@ export function App() {
               <div className={`voice-controls ${isGaiaLauncherClient ? 'voice-controls-single' : ''}`}>
                 <button
                   className={selfVoiceState.muted ? 'active' : ''}
+                  type="button"
                   onClick={() => updateVoiceState({ muted: !selfVoiceState.muted })}
                 >
                   {selfVoiceState.muted ? 'Unmute' : 'Mute'}
@@ -6224,6 +7237,7 @@ export function App() {
                 {!isGaiaLauncherClient && (
                   <button
                     className={selfVoiceState.pushToTalk ? 'active' : ''}
+                    type="button"
                     onClick={() => {
                       if (!desktopSoundSettingsControlled) {
                         updateVoiceState({ pushToTalk: !selfVoiceState.pushToTalk });
@@ -6240,6 +7254,7 @@ export function App() {
               {selfVoiceState.pushToTalk && (
                 <button
                   className={`voice-ptt ${pushToTalkHeld ? 'active' : ''}`}
+                  type="button"
                   onClick={() => {
                     if (desktopSoundSettingsControlled && desktopPushToTalkIsToggle) {
                       setSpeakingState(!pushToTalkHeld);
@@ -6277,6 +7292,7 @@ export function App() {
 
               <button
                 className="voice-disconnect voice-disconnect-bottom"
+                type="button"
                 onClick={() => leaveVoiceMutation.mutate()}
                 disabled={leaveVoiceMutation.isPending}
               >
@@ -6286,19 +7302,31 @@ export function App() {
           )}
         </section>
 
-        <div
-          className="channels-resize-handle"
-          role="separator"
-          aria-label="Resize channels sidebar"
-          aria-orientation="vertical"
-          aria-valuemin={MIN_CHANNELS_PANE_WIDTH}
-          aria-valuemax={getChannelsPaneMaxWidth()}
-          aria-valuenow={channelsPaneWidth}
-          tabIndex={0}
-          onPointerDown={handleChannelsPaneResizePointerDown}
-          onKeyDown={handleChannelsPaneResizeKeyDown}
-        />
       </aside>
+      <div
+        className="channels-resize-handle"
+        role="separator"
+        aria-label="Resize channels sidebar"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_CHANNELS_PANE_WIDTH}
+        aria-valuemax={getChannelsPaneMaxWidth()}
+        aria-valuenow={channelsPaneWidth}
+        aria-valuetext={`${channelsPaneWidth}px`}
+        tabIndex={0}
+        title="Drag to resize channels"
+        style={channelsResizeHandleMetrics ? {
+          left: `${channelsResizeHandleMetrics.left}px`,
+          top: `${channelsResizeHandleMetrics.top}px`,
+          height: `${channelsResizeHandleMetrics.height}px`,
+        } : undefined}
+        onPointerEnter={() => setIsHoveringChannelsResizeHandle(true)}
+        onPointerLeave={() => setIsHoveringChannelsResizeHandle(false)}
+        onFocus={() => setIsHoveringChannelsResizeHandle(true)}
+        onBlur={() => setIsHoveringChannelsResizeHandle(false)}
+        onPointerDown={handleChannelsPaneResizePointerDown}
+        onKeyDown={handleChannelsPaneResizeKeyDown}
+        onDoubleClick={handleChannelsPaneResizeDoubleClick}
+      />
 
       <main className="chat-pane">
         <header className="chat-header">
@@ -6321,11 +7349,11 @@ export function App() {
             <div className="header-actions">
               <small>{selectedVoiceParticipants.length} connected</small>
               {connectedVoiceChannelId === currentChannel.id ? (
-                <button onClick={() => leaveVoiceMutation.mutate()} disabled={leaveVoiceMutation.isPending}>
+                <button type="button" onClick={() => leaveVoiceMutation.mutate()} disabled={leaveVoiceMutation.isPending}>
                   Disconnect
                 </button>
               ) : (
-                <button onClick={() => joinVoiceMutation.mutate(currentChannel.id)} disabled={joinVoiceMutation.isPending || voiceClient.status === 'requesting_microphone' || voiceClient.status === 'connecting'}>
+                <button type="button" onClick={() => joinVoiceMutation.mutate(currentChannel.id)} disabled={joinVoiceMutation.isPending || voiceClient.status === 'requesting_microphone' || voiceClient.status === 'connecting'}>
                   Join Voice
                 </button>
               )}
@@ -6371,6 +7399,7 @@ export function App() {
                   {isViewingConnectedVoiceChannel ? (
                     <button
                       className="voice-room-action disconnect"
+                      type="button"
                       onClick={() => leaveVoiceMutation.mutate()}
                       disabled={leaveVoiceMutation.isPending}
                     >
@@ -6379,6 +7408,7 @@ export function App() {
                   ) : (
                     <button
                       className="voice-room-action"
+                      type="button"
                       onClick={() => joinVoiceMutation.mutate(currentChannel.id)}
                       disabled={
                         joinVoiceMutation.isPending ||
@@ -7106,6 +8136,49 @@ export function App() {
             </div>
           </div>
         </section>
+      )}
+      {channelDragPreview && draggingChannelItem && (
+        <div
+          className={`channel-drag-preview liquid-surface ${isOverLightBackground ? 'over-light-background' : ''} ${draggingChannelItem.nested ? 'nested' : ''} ${draggingChannelItem.kind === 'category' ? 'category' : ''}`}
+          style={{
+            left: `${clampNumber(
+              channelDragPreview.x - channelDragPreview.offsetX,
+              8,
+              Math.max(8, window.innerWidth - channelDragPreview.width - 8),
+            )}px`,
+            top: `${clampNumber(
+              channelDragPreview.y - channelDragPreview.offsetY,
+              8,
+              Math.max(8, window.innerHeight - 42),
+            )}px`,
+            width: `${channelDragPreview.width}px`,
+          }}
+          aria-hidden="true"
+        >
+          <LiquidGlassBackdrop
+            className="menu-liquid-glass channel-drag-liquid-glass"
+            overLight={isOverLightBackground}
+            cornerRadius={8}
+            displacementScale={128}
+            blurAmount={0.22}
+            saturation={145}
+            aberrationIntensity={2}
+            elasticity={0.04}
+            mode="prominent"
+            staticEffect
+          />
+          <span className="channel-drag-preview-leading">
+            {draggingChannelItem.kind === 'category'
+              ? '▾'
+              : getChannelLabelPrefix(draggingChannelItem.channel)}
+          </span>
+          <span className="channel-drag-preview-label">{draggingChannelItem.channel.name}</span>
+          {draggingChannelItem.kind === 'category' && (
+            <span className="channel-drag-preview-count">
+              {channelChildCountByCategoryId.get(draggingChannelItem.channel.id) ?? 0}
+            </span>
+          )}
+        </div>
       )}
       {isSearchModalOpen && (
         <div className="search-modal-backdrop" onClick={() => setIsSearchModalOpen(false)}>
@@ -7902,16 +8975,20 @@ function AuthScreen({
 }) {
   const [lanScreenName, setLanScreenName] = useState('');
   const [lanHandoff, setLanHandoff] = useState<OAuthLanHandoffPayload | null>(null);
+  const [atprotoProvider, setAtprotoProvider] = useState<AtprotoProviderChoice>('bluesky');
+  const [customProviderAddress, setCustomProviderAddress] = useState('');
+  const [customProviderError, setCustomProviderError] = useState<string | null>(null);
   const isLanMode = authMode === 'lan';
   const resolvedTitle = title ?? (isLanMode ? 'Join Current (LAN Mode)' : 'Sign In');
   const resolvedSubtitle = subtitle ?? '';
   const canSubmitLan = lanScreenName.trim().length >= 2;
+  const canSubmitCustomProvider = customProviderAddress.trim().length > 0;
 
   const oauthMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (provider: string) => {
       onAuthStart?.();
       const params = new URLSearchParams({
-        handle: 'https://bsky.social',
+        handle: provider,
         returnTo: window.location.origin + window.location.pathname,
       });
       return apiGet<OAuthStartPayload>(`/api/v1/auth/oauth/start?${params.toString()}`);
@@ -7926,6 +9003,17 @@ function AuthScreen({
       }
     },
   });
+
+  const startCustomProviderAuth = (event?: ReactFormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    try {
+      const provider = normalizeCustomAtprotoProviderAddress(customProviderAddress);
+      setCustomProviderError(null);
+      oauthMutation.mutate(provider);
+    } catch (error) {
+      setCustomProviderError(error instanceof Error ? error.message : 'Enter a valid server address.');
+    }
+  };
 
   const lanHandoffStatusQuery = useQuery({
     queryKey: ['auth', 'lan-handoff', lanHandoff?.handoffId, lanHandoff?.claimToken],
@@ -7991,6 +9079,7 @@ function AuthScreen({
   });
 
   const authError =
+    customProviderError ??
     (lanLoginMutation.error instanceof Error ? lanLoginMutation.error.message : undefined) ??
     (oauthMutation.error instanceof Error ? oauthMutation.error.message : undefined) ??
     (claimLanHandoffMutation.error instanceof Error ? claimLanHandoffMutation.error.message : undefined);
@@ -8021,26 +9110,88 @@ function AuthScreen({
           </>
         ) : (
           <>
-            <div className="auth-actions single">
-              <button className="bsky-login-button" onClick={() => oauthMutation.mutate()} disabled={oauthMutation.isPending}>
-                <svg
-                  className="bsky-logo"
-                  viewBox="0 0 600 530"
-                  aria-hidden
-                  focusable="false"
-                >
-                  <path
-                    fill="currentColor"
-                    d="M135 49c71 54 145 160 165 201 20-41 94-147 165-201 52-39 135-69 135 28 0 19-11 161-17 184-21 79-100 99-169 87 122 20 153 86 85 152-128 126-184-32-199-72-3-7-4-10-3-7-1-3-2 0-3 7-15 40-71 198-199 72-68-66-37-132 85-152-69 12-148-8-169-87-6-23-17-165-17-184 0-97 83-67 135-28Z"
-                  />
-                </svg>
-                <span>{oauthMutation.isPending ? 'Redirecting to Bluesky...' : 'Sign In With Bluesky'}</span>
+            <div className="auth-provider-tabs" role="tablist" aria-label="Account provider">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={atprotoProvider === 'bluesky'}
+                data-active={atprotoProvider === 'bluesky' ? 'true' : 'false'}
+                onClick={() => {
+                  setAtprotoProvider('bluesky');
+                  setCustomProviderError(null);
+                }}
+              >
+                Bluesky
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={atprotoProvider === 'custom'}
+                data-active={atprotoProvider === 'custom' ? 'true' : 'false'}
+                onClick={() => {
+                  setAtprotoProvider('custom');
+                  setCustomProviderError(null);
+                }}
+              >
+                Other
               </button>
             </div>
+
+            {atprotoProvider === 'custom' ? (
+              <form className="auth-provider-form" onSubmit={startCustomProviderAuth}>
+                <label>
+                  Server address or DID
+                  <input
+                    value={customProviderAddress}
+                    onChange={(event) => {
+                      setCustomProviderAddress(event.target.value);
+                      setCustomProviderError(null);
+                    }}
+                    placeholder="my-server.com or did:plc:..."
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <div className="auth-actions single">
+                  <button
+                    className="atproto-login-button"
+                    type="submit"
+                    disabled={oauthMutation.isPending || !canSubmitCustomProvider}
+                  >
+                    {oauthMutation.isPending ? 'Opening...' : 'Done'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="auth-actions single">
+                <button
+                  className="bsky-login-button"
+                  onClick={() => {
+                    setCustomProviderError(null);
+                    oauthMutation.mutate(DEFAULT_ATPROTO_PROVIDER);
+                  }}
+                  disabled={oauthMutation.isPending}
+                >
+                  <svg
+                    className="bsky-logo"
+                    viewBox="0 0 600 530"
+                    aria-hidden
+                    focusable="false"
+                  >
+                    <path
+                      fill="currentColor"
+                      d="M135 49c71 54 145 160 165 201 20-41 94-147 165-201 52-39 135-69 135 28 0 19-11 161-17 184-21 79-100 99-169 87 122 20 153 86 85 152-128 126-184-32-199-72-3-7-4-10-3-7-1-3-2 0-3 7-15 40-71 198-199 72-68-66-37-132 85-152-69 12-148-8-169-87-6-23-17-165-17-184 0-97 83-67 135-28Z"
+                    />
+                  </svg>
+                  <span>{oauthMutation.isPending ? 'Redirecting to Bluesky...' : 'Sign In With Bluesky'}</span>
+                </button>
+              </div>
+            )}
             {lanHandoff && (
               <div className="auth-lan-handoff">
                 <strong>LAN OAuth Handoff</strong>
-                <p>{lanHandoff.message ?? 'Complete Bluesky sign-in on the server host machine to finish login here.'}</p>
+                <p>{lanHandoff.message ?? 'Complete ATProto sign-in on the server host machine to finish login here.'}</p>
                 <label>
                   Open this on the host machine
                   <input readOnly value={lanHandoff.hostAuthUrl} />

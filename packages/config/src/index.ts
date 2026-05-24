@@ -3,6 +3,12 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 
 export const DEFAULT_SERVER_PORT = 6414;
+export const DEFAULT_ATPROTO_OAUTH_SCOPE = [
+  'atproto',
+  'transition:generic',
+  'identity:handle',
+  'rpc?aud=*&lxm=com.atproto.server.getSession',
+].join(' ');
 
 const PanelColorSchema = z
   .string()
@@ -38,7 +44,7 @@ const CurrentConfigSchema = z.object({
     authorizationEndpoint: z.string().url(),
     tokenEndpoint: z.string().url(),
     profileEndpoint: z.string().url(),
-    scope: z.string().default('atproto transition:generic'),
+    scope: z.string().default(DEFAULT_ATPROTO_OAUTH_SCOPE),
     cookieSecret: z.string().min(24),
     allowDevLogin: z.boolean().default(true),
   }),
@@ -234,7 +240,7 @@ export function createDefaultConfig(partial: DeepPartial<CurrentConfig> = {}): C
         partial.auth?.authorizationEndpoint ?? 'https://bsky.social/oauth/authorize',
       tokenEndpoint: partial.auth?.tokenEndpoint ?? 'https://bsky.social/oauth/token',
       profileEndpoint: partial.auth?.profileEndpoint ?? 'https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile',
-      scope: partial.auth?.scope ?? 'atproto transition:generic',
+      scope: partial.auth?.scope ?? DEFAULT_ATPROTO_OAUTH_SCOPE,
       cookieSecret: partial.auth?.cookieSecret ?? 'change-me-super-secret-cookie-key-please',
       allowDevLogin: partial.auth?.allowDevLogin ?? true,
     },

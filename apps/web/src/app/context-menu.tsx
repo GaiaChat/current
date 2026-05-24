@@ -16,8 +16,11 @@ export type ContextMenuItemVariant = 'normal' | 'danger';
 export interface ContextMenuItem<TContext> {
   id: string;
   label: string;
+  description?: string;
   icon?: ReactNode;
   shortcut?: string;
+  checked?: boolean;
+  selectionIndicator?: 'check' | 'radio';
   variant?: ContextMenuItemVariant;
   disabled?: boolean;
   disabledReason?: string;
@@ -500,8 +503,17 @@ export function ContextMenuHost<TContext>({
                   <span className="context-menu-icon" aria-hidden>
                     {item.icon}
                   </span>
-                  <span className="context-menu-label">{item.label}</span>
+                  <span className={item.description ? 'context-menu-label-stack' : 'context-menu-label'}>
+                    <span className="context-menu-label-text">{item.label}</span>
+                    {item.description && <span className="context-menu-description">{item.description}</span>}
+                  </span>
                   {item.shortcut && <span className="context-menu-shortcut">{item.shortcut}</span>}
+                  {item.selectionIndicator && (
+                    <span
+                      className={`context-menu-selection ${item.selectionIndicator} ${item.checked ? 'checked' : ''}`}
+                      aria-hidden
+                    />
+                  )}
                   {hasSubmenu && <span className="context-menu-caret" aria-hidden>›</span>}
                 </button>
               </div>
@@ -550,8 +562,17 @@ export function ContextMenuHost<TContext>({
               onClick={() => runItem(child)}
             >
               <span className="context-menu-icon" aria-hidden>{child.icon}</span>
-              <span className="context-menu-label">{child.label}</span>
+              <span className={child.description ? 'context-menu-label-stack' : 'context-menu-label'}>
+                <span className="context-menu-label-text">{child.label}</span>
+                {child.description && <span className="context-menu-description">{child.description}</span>}
+              </span>
               {child.shortcut && <span className="context-menu-shortcut">{child.shortcut}</span>}
+              {child.selectionIndicator && (
+                <span
+                  className={`context-menu-selection ${child.selectionIndicator} ${child.checked ? 'checked' : ''}`}
+                  aria-hidden
+                />
+              )}
             </button>
           ))}
         </div>
