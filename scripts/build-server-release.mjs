@@ -104,6 +104,7 @@ async function build() {
     '@current/types',
     '@current/protocol',
     '@current/config',
+    '@current/ui',
     '@current/web',
     '@current/server',
   ];
