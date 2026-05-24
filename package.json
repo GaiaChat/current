@@ -19,6 +19,8 @@
     "launch:server:lan:normal": "node scripts/start-current-server.mjs --instance=lan --mode=normal",
     "launch:server:normal": "node scripts/start-current-server.mjs --mode=normal",
     "lint": "turbo run lint",
+    "release:server": "node scripts/build-server-release.mjs",
+    "update:server": "node scripts/update-current-server.mjs",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write .",

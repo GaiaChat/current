@@ -1,0 +1,73 @@
+name: Publish Current Server Release
+
+on:
+  push:
+    tags:
+      - 'current-server-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create or update, for example current-server-v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: current-server-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-server-release:
+    name: Build and publish server update
+    runs-on: ubuntu-latest
+    env:
+      CURRENT_SERVER_RELEASE_REPOSITORY: GaiaChat/current
+      CURRENT_SERVER_RELEASE_BASE_URL: https://github.com/GaiaChat/current/releases/latest/download
+      RELEASE_REPO: GaiaChat/current
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build server update bundle
+        run: pnpm release:server
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: current-server-release
+          path: |
+            release-server/current-server-latest.json
+            release-server/current-server-v*.tar.gz
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" \
+              --repo "$RELEASE_REPO" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              --notes "Current server release $RELEASE_TAG"
+
+          gh release upload "$RELEASE_TAG" \
+            release-server/current-server-latest.json \
+            release-server/current-server-v*.tar.gz \
+            --repo "$RELEASE_REPO" \
+            --clobber

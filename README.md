@@ -116,6 +116,26 @@ sudo ./scripts/install-current.sh
 
 This installs dependencies, builds server packages, writes `/etc/systemd/system/current.service`, and starts the service.
 
+## Server Release Updates
+
+```bash
+pnpm release:server
+```
+
+This writes `release-server/current-server-v<version>.tar.gz` and
+`release-server/current-server-latest.json` for the
+`GaiaChat/current` GitHub Releases update channel.
+
+```bash
+sudo pnpm update:server
+```
+
+This downloads the latest server release, verifies its SHA-256, backs up config
+and SQLite, stages the new app under `/opt/current/versions`, and restarts the
+systemd service without overwriting messages, settings, uploads, or backups.
+See [docs/SERVER_UPDATES.md](docs/SERVER_UPDATES.md) for the rollout/apply
+design.
+
 ## Tests
 
 ```bash

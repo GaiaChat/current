@@ -7,18 +7,48 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 fi
 
 CURRENT_USER="${SUDO_USER:-$(whoami)}"
-CURRENT_WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVICE_TEMPLATE="$CURRENT_WORKDIR/deploy/current.service"
-SERVICE_TARGET="/etc/systemd/system/current.service"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL_ROOT="${CURRENT_SERVER_INSTALL_ROOT:-/opt/current}"
+STATE_DIR="${CURRENT_SERVER_STATE_DIR:-/var/lib/current}"
 CONFIG_DIR="/etc/current"
 CONFIG_PATH="$CONFIG_DIR/current.config.json"
+SERVICE_TEMPLATE="$SOURCE_DIR/deploy/current.service"
+SERVICE_TARGET="/etc/systemd/system/current.service"
 
 if [[ ! -f "$SERVICE_TEMPLATE" ]]; then
   echo "Missing service template: $SERVICE_TEMPLATE"
   exit 1
 fi
 
-mkdir -p "$CONFIG_DIR"
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js 20+ is required."
+  exit 1
+fi
+
+VERSION="$(
+  node - "$SOURCE_DIR" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.argv[2];
+for (const file of ['release-info.json', 'package.json']) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
+    if (typeof parsed.version === 'string' && parsed.version.trim()) {
+      process.stdout.write(parsed.version.trim());
+      process.exit(0);
+    }
+  } catch {
+    // keep looking
+  }
+}
+process.stdout.write('0.1.0');
+NODE
+)"
+VERSION_NAME="current-server-v$VERSION"
+VERSION_DIR="$INSTALL_ROOT/versions/$VERSION_NAME"
+CURRENT_WORKDIR="$INSTALL_ROOT/current"
+
+mkdir -p "$CONFIG_DIR" "$INSTALL_ROOT/versions" "$STATE_DIR/uploads" "$STATE_DIR/backups"
 
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "Creating default config at $CONFIG_PATH"
@@ -31,27 +61,43 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
     "host": "0.0.0.0",
     "port": 6414,
     "publicUrl": "http://127.0.0.1:6414",
-    "registrationMode": "invite_only"
+    "registrationMode": "invite_only",
+    "tls": {
+      "enabled": false,
+      "certPath": "",
+      "keyPath": ""
+    }
   },
   "auth": {
+    "mode": "atproto",
     "atprotoClientId": "",
     "redirectUri": "http://127.0.0.1:6414/api/v1/auth/oauth/callback",
+    "lanRedirectBaseUrl": "",
     "authorizationEndpoint": "https://bsky.social/oauth/authorize",
     "tokenEndpoint": "https://bsky.social/oauth/token",
     "profileEndpoint": "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile",
-    "scope": "atproto transition:generic",
+    "scope": "atproto transition:generic identity:handle rpc?aud=*&lxm=com.atproto.server.getSession",
     "cookieSecret": "change-me-super-secret-cookie-key-please",
     "allowDevLogin": true
   },
   "storage": {
-    "sqlitePath": "apps/server/data/current.sqlite",
-    "uploadDir": "apps/server/uploads",
+    "sqlitePath": "/var/lib/current/current.sqlite",
+    "uploadDir": "/var/lib/current/uploads",
     "mediaBackend": "local"
   },
   "media": {
     "maxAttachmentBytes": 10485760,
     "allowedMimePrefixes": ["image/", "video/", "audio/", "application/pdf"],
-    "tenorApiKey": ""
+    "gifProvider": "klipy",
+    "gifFallbackProvider": "none",
+    "klipyApiKey": "",
+    "giphyApiKey": ""
+  },
+  "appearance": {
+    "backgroundAttachmentId": "",
+    "panelColor": "",
+    "ownMessageColor": "",
+    "otherMessageColor": ""
   },
   "moderation": {
     "defaultSlowmodeSeconds": 0,
@@ -63,6 +109,8 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
     "announcedIp": "127.0.0.1",
     "udpMinPort": 40000,
     "udpMaxPort": 40100,
+    "workerCount": 0,
+    "sessionTimeoutMs": 45000,
     "turnUrls": []
   },
   "observability": {
@@ -73,38 +121,76 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
 JSON
 fi
 
+TMP_VERSION_DIR="$INSTALL_ROOT/versions/.stage-$VERSION_NAME-$$"
+rm -rf "$TMP_VERSION_DIR"
+mkdir -p "$TMP_VERSION_DIR"
+
+tar \
+  --exclude='./.git' \
+  --exclude='./node_modules' \
+  --exclude='./release-server' \
+  --exclude='./apps/server/config' \
+  --exclude='./apps/server/data' \
+  --exclude='./apps/server/uploads' \
+  --exclude='./apps/server/backups' \
+  --exclude='./apps/server/**/*.sqlite' \
+  --exclude='./apps/server/**/*.sqlite-shm' \
+  --exclude='./apps/server/**/*.sqlite-wal' \
+  -C "$SOURCE_DIR" -cf - . | tar -C "$TMP_VERSION_DIR" -xf -
+
+rm -rf "$VERSION_DIR"
+mv "$TMP_VERSION_DIR" "$VERSION_DIR"
+
+if [[ -e "$CURRENT_WORKDIR" && ! -L "$CURRENT_WORKDIR" ]]; then
+  echo "$CURRENT_WORKDIR exists and is not a symlink. Move it aside before installing."
+  exit 1
+fi
+ln -sfn "$VERSION_DIR" "$CURRENT_WORKDIR"
+
 sed \
   -e "s|{{CURRENT_USER}}|$CURRENT_USER|g" \
   -e "s|{{CURRENT_WORKDIR}}|$CURRENT_WORKDIR|g" \
   "$SERVICE_TEMPLATE" > "$SERVICE_TARGET"
 
-chown -R "$CURRENT_USER":"$CURRENT_USER" "$CURRENT_WORKDIR/apps/server/data" "$CURRENT_WORKDIR/apps/server/uploads" 2>/dev/null || true
+chown -R "$CURRENT_USER":"$CURRENT_USER" "$INSTALL_ROOT" "$STATE_DIR"
+chown root:"$CURRENT_USER" "$CONFIG_PATH" 2>/dev/null || true
+chmod 0640 "$CONFIG_PATH" 2>/dev/null || true
 
 cd "$CURRENT_WORKDIR"
 
 if command -v pnpm >/dev/null 2>&1; then
   PM="pnpm"
+elif command -v corepack >/dev/null 2>&1; then
+  PM="corepack pnpm"
 elif command -v npm >/dev/null 2>&1; then
   PM="npm"
 else
-  echo "A package manager is required (pnpm or npm)."
+  echo "A package manager is required (pnpm, corepack, or npm)."
   exit 1
 fi
 
-if [[ "$PM" == "pnpm" ]]; then
-  pnpm install
-  pnpm --filter @current/types build
-  pnpm --filter @current/protocol build
-  pnpm --filter @current/config build
-  pnpm --filter @current/web build
-  pnpm --filter @current/server build
+if [[ -f "$CURRENT_WORKDIR/release-info.json" ]]; then
+  if [[ "$PM" == "npm" ]]; then
+    npm install --omit=dev
+  else
+    $PM install --prod --frozen-lockfile || $PM install --prod
+  fi
 else
-  npm install
-  npm run build --workspace=@current/types
-  npm run build --workspace=@current/protocol
-  npm run build --workspace=@current/config
-  npm run build --workspace=@current/web
-  npm run build --workspace=@current/server
+  if [[ "$PM" == "npm" ]]; then
+    npm install
+    npm run build --workspace=@current/types
+    npm run build --workspace=@current/protocol
+    npm run build --workspace=@current/config
+    npm run build --workspace=@current/web
+    npm run build --workspace=@current/server
+  else
+    $PM install
+    $PM --filter @current/types build
+    $PM --filter @current/protocol build
+    $PM --filter @current/config build
+    $PM --filter @current/web build
+    $PM --filter @current/server build
+  fi
 fi
 
 systemctl daemon-reload
@@ -113,4 +199,6 @@ systemctl restart current.service
 
 echo "Current installed and started."
 echo "Service status: systemctl status current.service"
+echo "App symlink: $CURRENT_WORKDIR -> $VERSION_DIR"
 echo "Config file: $CONFIG_PATH"
+echo "State dir: $STATE_DIR"
