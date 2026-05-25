@@ -11,7 +11,6 @@ import { InviteService } from './services/invite-service.js';
 import { MemberService } from './services/member-service.js';
 import { ChatService } from './services/chat-service.js';
 import { AtprotoBlockService } from './services/atproto-block-service.js';
-import { ClientPresenceService } from './services/client-presence-service.js';
 import { VoiceService } from './voice/voice-service.js';
 import type { VoiceSfuAdapter } from './voice/voice-sfu-types.js';
 import { VoiceMediaShareService } from './voice/voice-media-share-service.js';
@@ -35,7 +34,6 @@ export function createAppContext(input: {
   const members = new MemberService(repos, () => serverConfig.get());
   const chat = new ChatService(repos, metrics, moderation, () => serverConfig.get());
   const atprotoBlocks = new AtprotoBlockService();
-  const clientPresence = new ClientPresenceService();
   const gateway = new GatewayService(repos, auth, metrics, atprotoBlocks, () => serverConfig.get());
   const voice = new VoiceService(
     repos,
@@ -83,7 +81,6 @@ export function createAppContext(input: {
     invites,
     members,
     atprotoBlocks,
-    clientPresence,
     voice,
     screenShare,
     cameraShare,

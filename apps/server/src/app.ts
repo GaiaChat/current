@@ -9,7 +9,6 @@ import { attachCurrentUser } from './api/auth-guard.js';
 import { registerSetupRoutes } from './api/routes/setup-routes.js';
 import { registerAuthRoutes } from './api/routes/auth-routes.js';
 import { registerServerRoutes } from './api/routes/server-routes.js';
-import { registerClientRoutes } from './api/routes/client-routes.js';
 import { registerMemberRoutes } from './api/routes/member-routes.js';
 import { registerChatRoutes } from './api/routes/chat-routes.js';
 import { registerModerationRoutes } from './api/routes/moderation-routes.js';
@@ -77,7 +76,6 @@ export function buildApp(context: AppContext, options: BuildAppOptions = {}) {
     await registerMetricsRoutes(api);
     await registerSetupRoutes(api);
     await registerAuthRoutes(api);
-    await registerClientRoutes(api);
     await registerServerRoutes(api);
     await registerMemberRoutes(api);
     await registerChatRoutes(api);

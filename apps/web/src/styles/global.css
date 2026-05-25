@@ -770,46 +770,6 @@ select {
   gap: 6px;
 }
 
-.client-usage-badge {
-  width: fit-content;
-  max-width: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 7px 10px;
-  border: 1px solid rgba(110, 255, 191, 0.2);
-  border-radius: 999px;
-  background: rgba(10, 28, 28, 0.24);
-  color: var(--ink-soft);
-  font-size: 0.78rem;
-  font-weight: 800;
-  line-height: 1.2;
-  text-align: center;
-}
-
-.client-usage-badge.compact {
-  justify-content: flex-start;
-  width: 100%;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.client-usage-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: #6effbf;
-  box-shadow: 0 0 0 4px rgba(110, 255, 191, 0.08);
-}
-
-.auth-card-head .client-usage-badge,
-.setup-hero .client-usage-badge {
-  margin-top: 4px;
-}
-
 .channels-pane header button,
 .chat-header button,
 .wizard-card button,
