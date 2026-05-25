@@ -78,6 +78,30 @@ async function rewriteWorkspacePackageForProduction(relativePackageJsonPath) {
   await writeFile(packageJsonPath, `${JSON.stringify(nextManifest, null, 2)}\n`);
 }
 
+async function writeRootScriptWrappers() {
+  await writeFile(
+    join(bundleDir, 'install-current.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'exec "$SCRIPT_DIR/scripts/install-current.sh" "$@"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(bundleDir, 'update-current-server.mjs'),
+    [
+      '#!/usr/bin/env node',
+      "import './scripts/update-current-server.mjs';",
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+}
+
 async function sha256(filePath) {
   const hash = createHash('sha256');
   await new Promise((resolveHash, rejectHash) => {
@@ -167,6 +191,7 @@ async function stageBundle() {
   await rewriteWorkspacePackageForProduction('packages/protocol/package.json');
   await rewriteWorkspacePackageForProduction('packages/types/package.json');
   await rewriteWorkspacePackageForProduction('packages/ui/package.json');
+  await writeRootScriptWrappers();
 
   await writeFile(
     join(bundleDir, 'release-info.json'),
