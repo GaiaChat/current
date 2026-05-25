@@ -41,7 +41,7 @@ for (const file of ['release-info.json', 'package.json']) {
     // keep looking
   }
 }
-process.stdout.write('0.1.0');
+process.stdout.write('0.2.0');
 NODE
 )"
 VERSION_NAME="current-server-v$VERSION"

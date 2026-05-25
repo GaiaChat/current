@@ -51,8 +51,8 @@ The durable Linux layout should separate app code from user state:
 
 ```text
 /opt/current/
-  versions/current-server-v0.1.0/
-  current -> versions/current-server-v0.1.0
+  versions/current-server-v0.2.0/
+  current -> versions/current-server-v0.2.0
 /etc/current/current.config.json
 /var/lib/current/current.sqlite
 /var/lib/current/uploads/
