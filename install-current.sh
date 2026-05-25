@@ -7,7 +7,7 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 fi
 
 CURRENT_USER="${SUDO_USER:-$(whoami)}"
-SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_ROOT="${CURRENT_SERVER_INSTALL_ROOT:-/opt/current}"
 STATE_DIR="${CURRENT_SERVER_STATE_DIR:-/var/lib/current}"
 CONFIG_DIR="/etc/current"

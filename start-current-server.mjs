@@ -8,7 +8,22 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+function hasCurrentManifest(dir) {
+  return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
+}
+
+function resolveCurrentRoot() {
+  const scriptDir = resolve(dirname(fileURLToPath(import.meta.url)));
+  for (const candidate of [process.cwd(), scriptDir, dirname(scriptDir)]) {
+    const resolved = resolve(candidate);
+    if (hasCurrentManifest(resolved)) {
+      return resolved;
+    }
+  }
+  return scriptDir;
+}
+
+const rootDir = resolveCurrentRoot();
 const serverRoot = join(rootDir, 'apps', 'server');
 const webDistDir = join(rootDir, 'apps', 'web', 'dist');
 const releaseInfoPath = join(rootDir, 'release-info.json');
@@ -48,8 +63,11 @@ function maybeRedirectToPortableCurrent() {
   }
 
   const currentRoot = join(dirname(rootDir), 'current');
-  const currentStartScript = join(currentRoot, 'scripts', 'start-current-server.mjs');
-  if (!existsSync(currentStartScript)) {
+  const currentStartScript = [
+    join(currentRoot, 'start-current-server.mjs'),
+    join(currentRoot, 'scripts', 'start-current-server.mjs'),
+  ].find((candidate) => existsSync(candidate));
+  if (!currentStartScript) {
     return;
   }
 
@@ -1136,12 +1154,7 @@ function parseModeArg() {
     if (arg === '--dev' || arg === 'dev' || arg === '--developer' || arg === 'developer') {
       return 'dev';
     }
-    if (
-      arg === '--normal' ||
-      arg === 'normal' ||
-      arg === '--regular' ||
-      arg === 'regular'
-    ) {
+    if (arg === '--normal' || arg === 'normal' || arg === '--regular' || arg === 'regular') {
       return 'normal';
     }
     if (arg.startsWith('--mode=')) {
@@ -1219,7 +1232,9 @@ async function chooseMode(releaseBundle) {
   });
 
   try {
-    const answer = (await readline.question('Start mode [1/regular, 2/developer] (default: regular): '))
+    const answer = (
+      await readline.question('Start mode [1/regular, 2/developer] (default: regular): ')
+    )
       .trim()
       .toLowerCase();
     if (

@@ -1,12 +1,23 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+function resolveSourceRoot() {
+  const scriptDir = resolve(dirname(fileURLToPath(import.meta.url)));
+  for (const candidate of [process.cwd(), scriptDir, dirname(scriptDir)]) {
+    const resolved = resolve(candidate);
+    if (existsSync(join(resolved, 'package.json'))) {
+      return resolved;
+    }
+  }
+  return scriptDir;
+}
+
+const rootDir = resolveSourceRoot();
 const packageJson = JSON.parse(await readFile(join(rootDir, 'package.json'), 'utf8'));
 const version = process.env.CURRENT_SERVER_RELEASE_VERSION || packageJson.version;
 const channel = process.env.CURRENT_SERVER_RELEASE_CHANNEL || 'stable';
@@ -20,9 +31,8 @@ const bundleName = `current-server-v${version}`;
 const bundleDir = join(stageRoot, bundleName);
 const archiveName = `${bundleName}.tar.gz`;
 const archivePath = join(releaseDir, archiveName);
-const manifestName = channel === 'stable'
-  ? 'current-server-latest.json'
-  : `current-server-${channel}.json`;
+const manifestName =
+  channel === 'stable' ? 'current-server-latest.json' : `current-server-${channel}.json`;
 const manifestPath = join(releaseDir, manifestName);
 const skipBuild = process.argv.includes('--skip-build');
 
@@ -119,12 +129,15 @@ async function rewriteWorkspacePackageForProduction(relativePackageJsonPath) {
 }
 
 async function writeReleaseRootPackage() {
-  const serverPackageJson = JSON.parse(await readFile(join(rootDir, 'apps/server/package.json'), 'utf8'));
+  const serverPackageJson = JSON.parse(
+    await readFile(join(rootDir, 'apps/server/package.json'), 'utf8'),
+  );
   const dependencies = {};
   for (const [name, spec] of Object.entries(serverPackageJson.dependencies ?? {})) {
-    dependencies[name] = typeof spec === 'string' && spec.startsWith('workspace:')
-      ? releaseDependencySpec('.', name)
-      : spec;
+    dependencies[name] =
+      typeof spec === 'string' && spec.startsWith('workspace:')
+        ? releaseDependencySpec('.', name)
+        : spec;
     if (!dependencies[name]) {
       throw new Error(`No release dependency path is configured for ${name}.`);
     }
@@ -139,46 +152,161 @@ async function writeReleaseRootPackage() {
     packageManager: packageJson.packageManager,
     scripts: {
       start: 'node apps/server/dist/index.js',
-      'launch:server': 'node scripts/start-current-server.mjs',
-      'update:server': 'node scripts/update-current-server.mjs',
-      setup: 'node scripts/install-local-current.mjs',
+      'launch:server': 'node "Run Current.mjs" --no-pause',
+      'update:server': 'node "Update Current.mjs" --no-pause',
+      setup: 'node "Install Current.mjs" --no-pause',
     },
     dependencies,
   };
 
-  await writeFile(join(bundleDir, 'package.json'), `${JSON.stringify(releasePackageJson, null, 2)}\n`);
+  await writeFile(
+    join(bundleDir, 'package.json'),
+    `${JSON.stringify(releasePackageJson, null, 2)}\n`,
+  );
 }
 
 async function writeReleaseWorkspaceConfig() {
   await writeFile(
     join(bundleDir, 'pnpm-workspace.yaml'),
-    [
-      'allowBuilds:',
-      '  core-js: false',
-      '  mediasoup: true',
-      '',
-    ].join('\n'),
+    ['allowBuilds:', '  core-js: false', '  mediasoup: true', ''].join('\n'),
   );
 }
 
 async function writeRootScriptWrappers() {
   await writeFile(
-    join(bundleDir, 'install-current.sh'),
+    join(bundleDir, 'Current Server.cmd'),
+    [
+      '@echo off',
+      'setlocal',
+      'cd /d "%~dp0"',
+      'node "%~dp0Run Current.mjs" %*',
+      'exit /b %ERRORLEVEL%',
+      '',
+    ].join('\r\n'),
+  );
+
+  await writeFile(
+    join(bundleDir, 'Current Server.command'),
     [
       '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
-      'exec "$SCRIPT_DIR/scripts/install-current.sh" "$@"',
+      'set -u',
+      'ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"',
+      'cd "$ROOT_DIR" || exit 1',
+      'node "$ROOT_DIR/Run Current.mjs" "$@"',
       '',
     ].join('\n'),
     { mode: 0o755 },
   );
 
   await writeFile(
-    join(bundleDir, 'update-current-server.mjs'),
+    join(bundleDir, 'Current Server Linux.sh'),
     [
-      '#!/usr/bin/env node',
-      "import './scripts/update-current-server.mjs';",
+      '#!/usr/bin/env bash',
+      'set -u',
+      'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'cd "$ROOT_DIR" || exit 1',
+      'node "$ROOT_DIR/Run Current.mjs" "$@"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(bundleDir, 'Current Server Linux.desktop'),
+    [
+      '[Desktop Entry]',
+      'Type=Application',
+      'Name=Current Server',
+      'Comment=Start the Current self-hosted chat server',
+      'Terminal=true',
+      'Exec=sh -c "launcher=\\"\\\\$1\\"; launcher=\\"\\\\${launcher#file://}\\"; dir=\\\\$(dirname \\"\\\\$launcher\\"); node \\"\\\\$dir/Run Current.mjs\\"" current-server-launcher %k',
+      'Icon=utilities-terminal',
+      'Categories=Network;Chat;',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(bundleDir, 'Update Current.cmd'),
+    [
+      '@echo off',
+      'setlocal',
+      'cd /d "%~dp0"',
+      'node "%~dp0Update Current.mjs" %*',
+      'exit /b %ERRORLEVEL%',
+      '',
+    ].join('\r\n'),
+  );
+
+  await writeFile(
+    join(bundleDir, 'Update Current.command'),
+    [
+      '#!/usr/bin/env bash',
+      'set -u',
+      'ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"',
+      'cd "$ROOT_DIR" || exit 1',
+      'node "$ROOT_DIR/Update Current.mjs" "$@"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(bundleDir, 'Update Current Linux.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'set -u',
+      'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'cd "$ROOT_DIR" || exit 1',
+      'if [[ "${EUID:-$(id -u)}" -ne 0 && ! -f "$ROOT_DIR/release-info.json" ]]; then',
+      '  if command -v sudo >/dev/null 2>&1; then',
+      '    sudo node "$ROOT_DIR/Update Current.mjs" "$@"',
+      '  else',
+      '    echo "Current updater needs root permissions. Re-run this with sudo."',
+      '    exit 1',
+      '  fi',
+      'else',
+      '  node "$ROOT_DIR/Update Current.mjs" "$@"',
+      'fi',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(bundleDir, 'Install Current.cmd'),
+    [
+      '@echo off',
+      'setlocal',
+      'cd /d "%~dp0"',
+      'node "%~dp0Install Current.mjs" %*',
+      'exit /b %ERRORLEVEL%',
+      '',
+    ].join('\r\n'),
+  );
+
+  await writeFile(
+    join(bundleDir, 'Install Current.command'),
+    [
+      '#!/usr/bin/env bash',
+      'set -u',
+      'ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"',
+      'cd "$ROOT_DIR" || exit 1',
+      'node "$ROOT_DIR/Install Current.mjs" "$@"',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(bundleDir, 'Install Current Linux.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'set -u',
+      'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'cd "$ROOT_DIR" || exit 1',
+      'node "$ROOT_DIR/Install Current.mjs" "$@"',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -230,22 +358,16 @@ async function stageBundle() {
     'tsconfig.base.json',
     'turbo.json',
     'README.md',
-    'Current Server.cmd',
-    'Current Server.command',
-    'Current Server Linux.sh',
-    'Current Server Linux.desktop',
-    'Update Current.cmd',
-    'Update Current.command',
-    'Update Current Linux.sh',
-    'Install Current.cmd',
-    'Install Current.command',
-    'Install Current Linux.sh',
+    'Install Current.mjs',
+    'Run Current.mjs',
+    'Update Current.mjs',
     'assets',
     'deploy/current.service',
-    'scripts/install-local-current.mjs',
-    'scripts/install-current.sh',
-    'scripts/start-current-server.mjs',
-    'scripts/update-current-server.mjs',
+    'current-script-wrapper.mjs',
+    'install-local-current.mjs',
+    'install-current.sh',
+    'start-current-server.mjs',
+    'update-current-server.mjs',
     'apps/server/package.json',
     'apps/server/tsconfig.json',
     'apps/server/dist',
@@ -289,14 +411,18 @@ async function stageBundle() {
 
   await writeFile(
     join(bundleDir, 'release-info.json'),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      name: 'current-server',
-      version,
-      channel,
-      builtAt: new Date().toISOString(),
-      packageLayout: 'runtime',
-    }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        name: 'current-server',
+        version,
+        channel,
+        builtAt: new Date().toISOString(),
+        packageLayout: 'runtime',
+      },
+      null,
+      2,
+    )}\n`,
   );
 
   await run(

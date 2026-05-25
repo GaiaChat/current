@@ -5,21 +5,29 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+function hasCurrentManifest(dir) {
+  return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
+}
+
+function resolveCurrentRoot() {
+  const scriptDir = resolve(dirname(fileURLToPath(import.meta.url)));
+  for (const candidate of [process.cwd(), scriptDir, dirname(scriptDir)]) {
+    const resolved = resolve(candidate);
+    if (hasCurrentManifest(resolved)) {
+      return resolved;
+    }
+  }
+  return scriptDir;
+}
+
+const rootDir = resolveCurrentRoot();
 const minimumNodeMajor = 20;
 const skipBuild = process.argv.includes('--skip-build');
 const reinstallRequested = process.argv.includes('--reinstall');
 const assumeYes = process.argv.includes('--yes') || process.argv.includes('-y');
 const releaseInfoPath = join(rootDir, 'release-info.json');
-const frozenLockfile =
-  process.argv.includes('--frozen-lockfile') ||
-  process.env.CI === 'true';
-const buildTargets = [
-  '@current/types',
-  '@current/protocol',
-  '@current/config',
-  '@current/ui',
-];
+const frozenLockfile = process.argv.includes('--frozen-lockfile') || process.env.CI === 'true';
+const buildTargets = ['@current/types', '@current/protocol', '@current/config', '@current/ui'];
 const symlinkSafePnpmArgs = [
   '--config.node-linker=hoisted',
   '--config.package-import-method=copy',
@@ -80,9 +88,8 @@ function commandStdout(command, args = ['--version']) {
 
 function readPnpmVersion() {
   const packageJson = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
-  const packageManager = typeof packageJson.packageManager === 'string'
-    ? packageJson.packageManager
-    : '';
+  const packageManager =
+    typeof packageJson.packageManager === 'string' ? packageJson.packageManager : '';
   const match = /^pnpm@(.+)$/.exec(packageManager);
   return match?.[1] ?? '11.3.0';
 }
@@ -201,16 +208,14 @@ async function main() {
     );
     if (!shouldReinstall) {
       console.log('[Current install] No changes made.');
-      console.log('[Current install] Run Current with the launcher for your OS.');
+      console.log('[Current install] Run Current with Run Current.mjs.');
       return;
     }
   } else if (reinstallRequested) {
     console.log('[Current install] Reinstall requested. Reinstalling this update.');
   }
 
-  const installArgs = releaseBundle
-    ? ['install', '--prod', ...symlinkSafePnpmArgs]
-    : ['install'];
+  const installArgs = releaseBundle ? ['install', '--prod', ...symlinkSafePnpmArgs] : ['install'];
   if (frozenLockfile && existsSync(join(rootDir, 'pnpm-lock.yaml'))) {
     installArgs.push('--frozen-lockfile');
   }
@@ -223,7 +228,7 @@ async function main() {
 
   if (releaseBundle) {
     console.log('[Current install] Release bundle setup complete.');
-    console.log('[Current install] Run Current with the launcher for your OS.');
+    console.log('[Current install] Run Current with Run Current.mjs.');
     return;
   }
 
@@ -234,7 +239,7 @@ async function main() {
   }
 
   console.log('[Current install] Setup complete.');
-  console.log('[Current install] Run Current with the launcher for your OS.');
+  console.log('[Current install] Run Current with Run Current.mjs.');
 }
 
 main().catch((error) => {
