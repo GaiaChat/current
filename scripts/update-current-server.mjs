@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 const defaultRepository = 'GaiaChat/current';
@@ -33,7 +34,10 @@ function usage() {
     '',
     'Options:',
     '  --check                     Only report whether an update is available.',
+    '  --reinstall                 Reinstall the latest release even if it is already installed.',
+    '  --yes                       Answer yes to interactive reinstall prompts.',
     '  --no-restart                Stage the update without restarting current.service.',
+    '  --no-pause                  Do not wait for Enter/Return before exiting.',
     '  --manifest-url <url>        Override the update manifest URL.',
     '  --install-root <path>       Default: /opt/current',
     '  --state-dir <path>          Default: /var/lib/current',
@@ -44,7 +48,10 @@ function usage() {
 function parseArgs() {
   const options = {
     check: false,
+    reinstall: false,
+    yes: false,
     restart: true,
+    noPause: false,
     manifestUrl: process.env.CURRENT_SERVER_UPDATE_MANIFEST_URL || defaultManifestUrl,
     installRoot: process.env.CURRENT_SERVER_INSTALL_ROOT || '/opt/current',
     stateDir: process.env.CURRENT_SERVER_STATE_DIR || '/var/lib/current',
@@ -62,8 +69,20 @@ function parseArgs() {
       options.check = true;
       continue;
     }
+    if (arg === '--reinstall') {
+      options.reinstall = true;
+      continue;
+    }
+    if (arg === '--yes' || arg === '-y') {
+      options.yes = true;
+      continue;
+    }
     if (arg === '--no-restart') {
       options.restart = false;
+      continue;
+    }
+    if (arg === '--no-pause') {
+      options.noPause = true;
       continue;
     }
     if (arg === '--manifest-url' || arg === '--install-root' || arg === '--state-dir' || arg === '--config') {
@@ -92,6 +111,65 @@ function parseArgs() {
     stateDir: resolve(options.stateDir),
     configPath: resolve(options.configPath),
   };
+}
+
+function isInteractive() {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function askYesNo(options, question, defaultValue = false) {
+  if (options.yes) {
+    return true;
+  }
+  if (!isInteractive()) {
+    return defaultValue;
+  }
+
+  const suffix = defaultValue ? '[Y/n]' : '[y/N]';
+  const prompt = `${question} ${suffix} `;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(prompt)).trim().toLowerCase();
+    if (!answer) {
+      return defaultValue;
+    }
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+async function waitForEnterToClose(options) {
+  if (options.noPause || !isInteractive()) {
+    return;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    await rl.question('\nPress Enter/Return to close this window.');
+  } finally {
+    rl.close();
+  }
+}
+
+function printCompletionSummary(input) {
+  console.log('');
+  console.log('[Current update] ==================================================');
+  console.log(`[Current update] Update complete. Current server v${input.latestVersion} is installed.`);
+  if (input.reinstalled) {
+    console.log('[Current update] Reinstalled the current release by request.');
+  }
+  console.log(`[Current update] Active app: ${input.versionDir}`);
+  console.log(`[Current update] Config: ${input.options.configPath}`);
+  console.log(`[Current update] State: ${input.options.stateDir}`);
+  if (input.restartResult === 'restarted') {
+    console.log('[Current update] current.service was restarted.');
+  } else if (input.restartResult === 'skipped') {
+    console.log('[Current update] Restart was skipped. Restart current.service when ready.');
+  } else {
+    console.log('[Current update] Restart Current manually on this machine.');
+  }
+  console.log('[Current update] ==================================================');
 }
 
 function run(command, args, label, cwd = scriptRoot) {
@@ -364,17 +442,17 @@ async function switchCurrentSymlink(options, targetDir) {
 async function restartService(shouldRestart) {
   if (!shouldRestart) {
     console.log('[Current update] Restart skipped. Restart current.service when ready.');
-    return;
+    return 'skipped';
   }
   if (!commandWorks('systemctl', ['--version'])) {
     console.log('[Current update] systemctl was not found. Restart Current manually.');
-    return;
+    return 'manual';
   }
   await run('systemctl', ['restart', 'current.service'], 'current.service restart');
+  return 'restarted';
 }
 
-async function main() {
-  const options = parseArgs();
+async function main(options) {
   const manifest = await fetchJson(options.manifestUrl);
   const latestVersion = String(manifest.version || '').trim();
   if (!latestVersion) {
@@ -382,9 +460,23 @@ async function main() {
   }
 
   const currentVersion = await installedVersion(options.installRoot);
-  if (currentVersion === latestVersion) {
+  let reinstallingCurrentVersion = false;
+  if (currentVersion === latestVersion && !options.reinstall) {
     console.log(`[Current update] Current server is already on ${latestVersion}.`);
-    return;
+    if (options.check) {
+      return;
+    }
+    const shouldReinstall = await askYesNo(
+      options,
+      `[Current update] Try reinstalling this update?`,
+      false,
+    );
+    if (!shouldReinstall) {
+      console.log('[Current update] No changes made.');
+      return;
+    }
+    reinstallingCurrentVersion = true;
+    console.log(`[Current update] Reinstalling Current server v${latestVersion}.`);
   }
 
   console.log(`[Current update] Installed: ${currentVersion || 'unknown'}`);
@@ -413,11 +505,30 @@ async function main() {
   const versionDir = await extractVersion(archivePath, options, archiveRoot);
   await installProductionDependencies(versionDir);
   await switchCurrentSymlink(options, versionDir);
-  await restartService(options.restart);
-  console.log(`[Current update] Updated Current server to ${latestVersion}.`);
+  const restartResult = await restartService(options.restart);
+  printCompletionSummary({
+    latestVersion,
+    versionDir,
+    restartResult,
+    reinstalled: options.reinstall || reinstallingCurrentVersion,
+    options,
+  });
 }
 
-main().catch((error) => {
+let options;
+let exitCode = 0;
+try {
+  options = parseArgs();
+  await main(options);
+} catch (error) {
+  exitCode = 1;
   console.error(`[Current update] ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+} finally {
+  if (options) {
+    await waitForEnterToClose(options);
+  }
+}
+
+if (exitCode !== 0) {
+  process.exit(exitCode);
+}

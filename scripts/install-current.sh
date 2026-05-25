@@ -14,6 +14,19 @@ CONFIG_DIR="/etc/current"
 CONFIG_PATH="$CONFIG_DIR/current.config.json"
 SERVICE_TEMPLATE="$SOURCE_DIR/deploy/current.service"
 SERVICE_TARGET="/etc/systemd/system/current.service"
+REINSTALL_REQUESTED=0
+ASSUME_YES=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --reinstall)
+      REINSTALL_REQUESTED=1
+      ;;
+    --yes|-y)
+      ASSUME_YES=1
+      ;;
+  esac
+done
 
 if [[ ! -f "$SERVICE_TEMPLATE" ]]; then
   echo "Missing service template: $SERVICE_TEMPLATE"
@@ -47,6 +60,22 @@ NODE
 VERSION_NAME="current-server-v$VERSION"
 VERSION_DIR="$INSTALL_ROOT/versions/$VERSION_NAME"
 CURRENT_WORKDIR="$INSTALL_ROOT/current"
+
+if [[ "$REINSTALL_REQUESTED" -eq 0 && -e "$CURRENT_WORKDIR" && -t 0 && -t 1 && "$ASSUME_YES" -eq 0 ]]; then
+  echo "Current already appears to be installed at $CURRENT_WORKDIR."
+  read -r -p "Try reinstalling this update? [y/N] " REINSTALL_ANSWER
+  case "${REINSTALL_ANSWER,,}" in
+    y|yes)
+      echo "Reinstalling Current $VERSION_NAME."
+      ;;
+    *)
+      echo "Install cancelled. No changes made."
+      exit 0
+      ;;
+  esac
+elif [[ "$REINSTALL_REQUESTED" -eq 1 ]]; then
+  echo "Reinstall requested. Reinstalling Current $VERSION_NAME."
+fi
 
 mkdir -p "$CONFIG_DIR" "$INSTALL_ROOT/versions" "$STATE_DIR/uploads" "$STATE_DIR/backups"
 

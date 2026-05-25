@@ -2,11 +2,14 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const minimumNodeMajor = 20;
 const skipBuild = process.argv.includes('--skip-build');
+const reinstallRequested = process.argv.includes('--reinstall');
+const assumeYes = process.argv.includes('--yes') || process.argv.includes('-y');
 const releaseInfoPath = join(rootDir, 'release-info.json');
 const frozenLockfile =
   process.argv.includes('--frozen-lockfile') ||
@@ -97,6 +100,44 @@ function isReleaseBundle() {
   return existsSync(releaseInfoPath);
 }
 
+function isInteractive() {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+async function askYesNo(question, defaultValue = false) {
+  if (assumeYes) {
+    return true;
+  }
+  if (!isInteractive()) {
+    return defaultValue;
+  }
+
+  const suffix = defaultValue ? '[Y/n]' : '[y/N]';
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(`${question} ${suffix} `)).trim().toLowerCase();
+    if (!answer) {
+      return defaultValue;
+    }
+    return answer === 'y' || answer === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+function setupLooksComplete(releaseBundle) {
+  if (!existsSync(join(rootDir, 'node_modules', '.pnpm'))) {
+    return false;
+  }
+  if (releaseBundle) {
+    return existsSync(join(rootDir, 'node_modules', 'fastify', 'package.json'));
+  }
+  return buildTargets.every((target) => {
+    const packageDir = target.replace(/^@current\//, '');
+    return existsSync(join(rootDir, 'packages', packageDir, 'dist'));
+  });
+}
+
 function resolvePackageManager() {
   const pnpmVersion = readPnpmVersion();
   const npx = commandName('npx');
@@ -152,6 +193,20 @@ async function main() {
   const releaseBundle = isReleaseBundle();
   console.log(`[Current install] Repo: ${rootDir}`);
   console.log(`[Current install] Package manager: ${packageManager.label}`);
+
+  if (!reinstallRequested && setupLooksComplete(releaseBundle)) {
+    const shouldReinstall = await askYesNo(
+      '[Current install] Current setup already appears complete. Try reinstalling this update?',
+      false,
+    );
+    if (!shouldReinstall) {
+      console.log('[Current install] No changes made.');
+      console.log('[Current install] Run Current with the launcher for your OS.');
+      return;
+    }
+  } else if (reinstallRequested) {
+    console.log('[Current install] Reinstall requested. Reinstalling this update.');
+  }
 
   const installArgs = releaseBundle
     ? ['install', '--prod', ...symlinkSafePnpmArgs]

@@ -38,6 +38,30 @@ function isReleaseBundle() {
   return existsSync(releaseInfoPath);
 }
 
+function readCurrentVersion() {
+  for (const filePath of [releaseInfoPath, join(rootDir, 'package.json')]) {
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+      if (typeof parsed.version === 'string' && parsed.version.trim()) {
+        return parsed.version.trim();
+      }
+    } catch {
+      // Keep looking.
+    }
+  }
+  return 'dev';
+}
+
+function printGaiaChatBanner() {
+  console.log('  ____       _       ____ _           _');
+  console.log(' / ___| __ _(_) __ _/ ___| |__   __ _| |_');
+  console.log("| |  _ / _` | |/ _` | |   | '_ \\ / _` | __|");
+  console.log('| |_| | (_| | | (_| | |___| | | | (_| | |_');
+  console.log(' \\____|\\__,_|_|\\__,_|\\____|_| |_|\\__,_|\\__|');
+  console.log(`Gaia Chat Version ${readCurrentVersion()}`);
+  console.log('');
+}
+
 function commandName(name) {
   return isWindows ? `${name}.cmd` : name;
 }
@@ -66,9 +90,8 @@ function commandStdout(command, args = ['--version']) {
 function readPnpmVersion() {
   try {
     const packageJson = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
-    const packageManager = typeof packageJson.packageManager === 'string'
-      ? packageJson.packageManager
-      : '';
+    const packageManager =
+      typeof packageJson.packageManager === 'string' ? packageJson.packageManager : '';
     const match = /^pnpm@(.+)$/.exec(packageManager);
     return match?.[1] ?? '11.3.0';
   } catch {
@@ -120,10 +143,7 @@ function displayPath(filePath) {
 
 async function filesMatch(leftPath, rightPath) {
   try {
-    const [left, right] = await Promise.all([
-      readFile(leftPath),
-      readFile(rightPath),
-    ]);
+    const [left, right] = await Promise.all([readFile(leftPath), readFile(rightPath)]);
     return left.equals(right);
   } catch {
     return false;
@@ -174,7 +194,9 @@ async function ensureDependencies(pm, releaseBundle) {
   }
 
   if (checkOnly) {
-    throw new Error(`Dependencies need setup (${reason}). Run the launcher normally to install them.`);
+    throw new Error(
+      `Dependencies need setup (${reason}). Run the launcher normally to install them.`,
+    );
   }
 
   console.log(`[Current] Dependencies need setup (${reason}).`);
@@ -253,18 +275,22 @@ function parsePortArg() {
 function withPort(url, port) {
   const parsed = new URL(url);
   parsed.port = String(port);
-  return parsed.toString();
+  return parsed.toString().replace(/\/$/, '');
+}
+
+function withLaunchPort(config, port) {
+  return {
+    ...config,
+    port,
+    url: withPort(config.url, port),
+  };
 }
 
 function applyLaunchPortOverride(config, portOverride) {
   if (!portOverride) {
     return config;
   }
-  return {
-    ...config,
-    port: portOverride,
-    url: withPort(config.url, portOverride),
-  };
+  return withLaunchPort(config, portOverride);
 }
 
 async function readServerLaunchConfig(instance, portOverride) {
@@ -276,16 +302,20 @@ async function readServerLaunchConfig(instance, portOverride) {
 
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf8'));
-    const server = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.server : undefined;
+    const server =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.server : undefined;
     const host = typeof server?.host === 'string' ? server.host : fallback.host;
     const port = Number.isInteger(server?.port) && server.port > 0 ? server.port : fallback.port;
     const protocol = server?.tls?.enabled ? 'https' : 'http';
     const url = `${protocol}://${normalizeBrowserHost(host)}:${port}`;
-    return applyLaunchPortOverride({
-      host,
-      port,
-      url,
-    }, portOverride);
+    return applyLaunchPortOverride(
+      {
+        host,
+        port,
+        url,
+      },
+      portOverride,
+    );
   } catch {
     return applyLaunchPortOverride(fallback, portOverride);
   }
@@ -360,18 +390,20 @@ function buildLanDefaultConfig() {
 }
 
 function patchLanConfig(rawConfig) {
-  const config = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
-    ? rawConfig
-    : {};
-  const server = config.server && typeof config.server === 'object' && !Array.isArray(config.server)
-    ? config.server
-    : {};
-  const auth = config.auth && typeof config.auth === 'object' && !Array.isArray(config.auth)
-    ? config.auth
-    : {};
-  const storage = config.storage && typeof config.storage === 'object' && !Array.isArray(config.storage)
-    ? config.storage
-    : {};
+  const config =
+    rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig) ? rawConfig : {};
+  const server =
+    config.server && typeof config.server === 'object' && !Array.isArray(config.server)
+      ? config.server
+      : {};
+  const auth =
+    config.auth && typeof config.auth === 'object' && !Array.isArray(config.auth)
+      ? config.auth
+      : {};
+  const storage =
+    config.storage && typeof config.storage === 'object' && !Array.isArray(config.storage)
+      ? config.storage
+      : {};
   const defaultConfig = buildLanDefaultConfig();
 
   return {
@@ -467,7 +499,8 @@ function canListen(host, port) {
 }
 
 function openUrl(url) {
-  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+  const command =
+    process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   const child = spawn(command, args, {
     detached: true,
@@ -526,7 +559,9 @@ async function chooseInstance() {
   console.log('  1) Standard - normal Current server using the standard config/data');
   console.log('  2) LAN      - separate LAN-only server using its own config/data on port 8081');
 
-  const answer = (await ask('Server instance [1/standard, 2/lan] (default: standard): ')).trim().toLowerCase();
+  const answer = (await ask('Server instance [1/standard, 2/lan] (default: standard): '))
+    .trim()
+    .toLowerCase();
   if (!answer || answer === '1' || answer === 'standard' || answer === 's') {
     return 'standard';
   }
@@ -637,7 +672,9 @@ function parsePidMatches(output) {
 }
 
 function localAddressHasPort(address, port) {
-  const normalized = String(address ?? '').replace(/^\[/, '').replace(/\]$/, '');
+  const normalized = String(address ?? '')
+    .replace(/^\[/, '')
+    .replace(/\]$/, '');
   return normalized.endsWith(`:${port}`) || normalized.endsWith(`.${port}`);
 }
 
@@ -745,7 +782,11 @@ function parseWindowsNetstatOwners(output, port, shellCommand) {
     const localAddress = columns[1] ?? '';
     const state = columns[3] ?? '';
     const pid = Number(columns[4]);
-    if (state.toUpperCase() === 'LISTENING' && localAddress.endsWith(portSuffix) && Number.isInteger(pid)) {
+    if (
+      state.toUpperCase() === 'LISTENING' &&
+      localAddress.endsWith(portSuffix) &&
+      Number.isInteger(pid)
+    ) {
       owners.push(windowsProcessDetails(pid, shellCommand));
     }
   }
@@ -842,6 +883,52 @@ async function waitForPortRelease(config, timeoutMs) {
   return false;
 }
 
+async function findAvailablePort(host, startAfterPort) {
+  const startPort = Math.min(Math.max(startAfterPort + 1, 1), 65535);
+  for (let port = startPort; port <= 65535 && port < startPort + 200; port += 1) {
+    const status = await canListen(host, port);
+    if (status.available) {
+      return port;
+    }
+  }
+  return null;
+}
+
+async function chooseDifferentPort(config) {
+  const suggestedPort = await findAvailablePort(config.host, config.port);
+  while (true) {
+    const suffix = suggestedPort ? ` (default: ${suggestedPort})` : '';
+    const answer = (await ask(`Port for this new server session${suffix}: `)).trim();
+    let candidatePort;
+    try {
+      candidatePort = answer ? normalizePort(answer) : suggestedPort;
+    } catch (error) {
+      console.log(`[Current] ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    if (!candidatePort) {
+      console.log('[Current] Enter a port from 1 to 65535.');
+      continue;
+    }
+
+    const candidateConfig = withLaunchPort(config, candidatePort);
+    const status = await canListen(candidateConfig.host, candidateConfig.port);
+    if (status.available) {
+      console.log(`[Current] This session will use ${candidateConfig.url}.`);
+      return candidateConfig;
+    }
+
+    if (status.code === 'EADDRINUSE') {
+      console.log(`[Current] Port ${candidatePort} is already in use. Choose another port.`);
+      continue;
+    }
+
+    throw new Error(
+      `Could not check ${candidateConfig.host}:${candidateConfig.port}: ${status.message}`,
+    );
+  }
+}
+
 async function stopPortOwnersAndRetry(config, owners) {
   const stoppableOwners = uniqueOwners(owners);
   if (stoppableOwners.length === 0) {
@@ -861,7 +948,9 @@ async function stopPortOwnersAndRetry(config, owners) {
 
   console.log(`[Current] Port ${config.port} is still busy after a graceful stop request.`);
   if (process.stdin.isTTY && process.stdout.isTTY) {
-    const answer = (await ask('Force stop the process tree using this port? [y/N]: ')).trim().toLowerCase();
+    const answer = (await ask('Force stop the process tree using this port? [y/N]: '))
+      .trim()
+      .toLowerCase();
     if (answer !== 'y' && answer !== 'yes') {
       return false;
     }
@@ -882,25 +971,29 @@ async function stopPortOwnersAndRetry(config, owners) {
 }
 
 async function ensurePortAvailable(config) {
+  let currentConfig = config;
   while (true) {
-    const status = await canListen(config.host, config.port);
+    const status = await canListen(currentConfig.host, currentConfig.port);
     if (status.available) {
-      return true;
+      return currentConfig;
     }
 
     if (status.code !== 'EADDRINUSE') {
-      throw new Error(`Could not check ${config.host}:${config.port}: ${status.message}`);
+      throw new Error(
+        `Could not check ${currentConfig.host}:${currentConfig.port}: ${status.message}`,
+      );
     }
 
     console.log('');
-    console.log(`[Current] Port ${config.port} is already in use on ${config.host}.`);
-    console.log(`[Current] Another Current server may already be running at ${config.url}.`);
-    const portOwners = findPortOwners(config.port);
+    console.log(`[Current] Port ${currentConfig.port} is already in use on ${currentConfig.host}.`);
+    console.log(`[Current] Another Current server may already be running at ${currentConfig.url}.`);
+    const portOwners = findPortOwners(currentConfig.port);
     const currentOwners = portOwners.filter(isLikelyCurrentOwner);
     const ownersToStop = currentOwners.length > 0 ? currentOwners : portOwners;
-    const stopLabel = currentOwners.length > 0
-      ? 'Stop the existing Current server and retry'
-      : 'Stop the process using this port and retry';
+    const stopLabel =
+      currentOwners.length > 0
+        ? 'Stop the existing Current server and retry'
+        : 'Stop the process using this port and retry';
     if (portOwners.length > 0) {
       console.log('[Current] Process using this port:');
       for (const owner of portOwners) {
@@ -910,50 +1003,82 @@ async function ensurePortAvailable(config) {
     }
 
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      throw new Error(`Port ${config.port} is busy. Stop the process using it, then run the launcher again.`);
+      throw new Error(
+        `Port ${currentConfig.port} is busy. Stop the process using it, then run the launcher again.`,
+      );
     }
 
     console.log('');
+    console.log('This server looks like it is already running.');
     console.log('What would you like to do?');
-    console.log('  1) Open the existing server and exit');
+    console.log('  1) This is already running - open it and close this launcher');
     if (ownersToStop.length > 0) {
       console.log(`  2) ${stopLabel}`);
+      console.log('  3) Start this server on a different port');
+      console.log('  4) I stopped the other process, retry the port check');
+      console.log('  5) Exit');
+    } else {
+      console.log('  2) Start this server on a different port');
       console.log('  3) I stopped the other process, retry the port check');
       console.log('  4) Exit');
-    } else {
-      console.log('  2) I stopped the other process, retry the port check');
-      console.log('  3) Exit');
     }
-    const prompt = ownersToStop.length > 0
-      ? 'Choose [1/open, 2/stop, 3/retry, 4/exit] (default: open): '
-      : 'Choose [1/open, 2/retry, 3/exit] (default: open): ';
+    const prompt =
+      ownersToStop.length > 0
+        ? 'Choose [1/open, 2/stop, 3/new-port, 4/retry, 5/exit] (default: open): '
+        : 'Choose [1/open, 2/new-port, 3/retry, 4/exit] (default: open): ';
     const answer = (await ask(prompt)).trim().toLowerCase();
 
-    if (!answer || answer === '1' || answer === 'open' || answer === 'o') {
-      openUrl(config.url);
-      console.log(`[Current] Opened ${config.url}.`);
-      return false;
+    if (
+      !answer ||
+      answer === '1' ||
+      answer === 'open' ||
+      answer === 'o' ||
+      answer === 'already' ||
+      answer === 'running' ||
+      answer === 'already-running'
+    ) {
+      openUrl(currentConfig.url);
+      console.log(`[Current] Opened ${currentConfig.url}.`);
+      return null;
     }
 
     if (ownersToStop.length > 0 && (answer === '2' || answer === 'stop' || answer === 's')) {
-      if (await stopPortOwnersAndRetry(config, ownersToStop)) {
+      if (await stopPortOwnersAndRetry(currentConfig, ownersToStop)) {
         continue;
       }
       continue;
     }
 
     if (
-      (ownersToStop.length > 0 && (answer === '3' || answer === 'retry' || answer === 'r')) ||
-      (ownersToStop.length === 0 && (answer === '2' || answer === 'retry' || answer === 'r'))
+      (ownersToStop.length > 0 &&
+        (answer === '3' ||
+          answer === 'new-port' ||
+          answer === 'new' ||
+          answer === 'port' ||
+          answer === 'p')) ||
+      (ownersToStop.length === 0 &&
+        (answer === '2' ||
+          answer === 'new-port' ||
+          answer === 'new' ||
+          answer === 'port' ||
+          answer === 'p'))
+    ) {
+      currentConfig = await chooseDifferentPort(currentConfig);
+      continue;
+    }
+
+    if (
+      (ownersToStop.length > 0 && (answer === '4' || answer === 'retry' || answer === 'r')) ||
+      (ownersToStop.length === 0 && (answer === '3' || answer === 'retry' || answer === 'r'))
     ) {
       continue;
     }
 
     if (
-      (ownersToStop.length > 0 && (answer === '4' || answer === 'exit' || answer === 'e')) ||
-      (ownersToStop.length === 0 && (answer === '3' || answer === 'exit' || answer === 'e'))
+      (ownersToStop.length > 0 && (answer === '5' || answer === 'exit' || answer === 'e')) ||
+      (ownersToStop.length === 0 && (answer === '4' || answer === 'exit' || answer === 'e'))
     ) {
-      return false;
+      return null;
     }
 
     console.log(`[Current] Unknown choice "${answer}".`);
@@ -962,10 +1087,15 @@ async function ensurePortAvailable(config) {
 
 function parseModeArg() {
   for (const arg of process.argv.slice(2)) {
-    if (arg === '--dev' || arg === 'dev') {
+    if (arg === '--dev' || arg === 'dev' || arg === '--developer' || arg === 'developer') {
       return 'dev';
     }
-    if (arg === '--normal' || arg === 'normal') {
+    if (
+      arg === '--normal' ||
+      arg === 'normal' ||
+      arg === '--regular' ||
+      arg === 'regular'
+    ) {
       return 'normal';
     }
     if (arg.startsWith('--mode=')) {
@@ -980,7 +1110,9 @@ async function chooseMode(releaseBundle) {
   const requestedMode = parseModeArg();
   if (requestedMode) {
     if (releaseBundle && requestedMode === 'dev') {
-      throw new Error('Dev mode is not available in packaged server releases. Use normal mode, or run dev mode from a source checkout.');
+      throw new Error(
+        'Dev mode is not available in packaged server releases. Use normal mode, or run dev mode from a source checkout.',
+      );
     }
     if (validModes.has(requestedMode)) {
       return requestedMode;
@@ -989,7 +1121,36 @@ async function chooseMode(releaseBundle) {
   }
 
   if (releaseBundle) {
-    console.log('[Current] Release bundle detected; using normal mode with prebuilt server assets.');
+    if (!checkOnly && process.stdin.isTTY && process.stdout.isTTY) {
+      console.log('');
+      console.log('Choose launch mode:');
+      console.log('  1) Regular   - run the prebuilt server assets from this release');
+      console.log('  2) Developer - source checkout only, with web/server watchers');
+
+      const answer = (await ask('Start mode [1/regular, 2/developer] (default: regular): '))
+        .trim()
+        .toLowerCase();
+      if (answer === '2' || answer === 'dev' || answer === 'developer' || answer === 'd') {
+        throw new Error(
+          'Developer mode is not available in packaged server releases. Use a source checkout for developer mode.',
+        );
+      }
+      if (
+        answer &&
+        answer !== '1' &&
+        answer !== 'regular' &&
+        answer !== 'production' &&
+        answer !== 'prod' &&
+        answer !== 'normal' &&
+        answer !== 'n'
+      ) {
+        throw new Error(`Unknown launch mode "${answer}". Use production or dev.`);
+      }
+    } else {
+      console.log(
+        '[Current] Release bundle detected; using production mode with prebuilt server assets.',
+      );
+    }
     return 'normal';
   }
 
@@ -1003,8 +1164,8 @@ async function chooseMode(releaseBundle) {
 
   console.log('');
   console.log('Choose launch mode:');
-  console.log('  1) Normal - builds once and runs the server without watchers');
-  console.log('  2) Dev    - builds/watches the web GUI and restarts the server on source changes');
+  console.log('  1) Regular   - builds once and runs the server without watchers');
+  console.log('  2) Developer - uses source watchers for the web GUI and server');
 
   const readline = createInterface({
     input: process.stdin,
@@ -1012,14 +1173,22 @@ async function chooseMode(releaseBundle) {
   });
 
   try {
-    const answer = (await readline.question('Start mode [1/normal, 2/dev] (default: normal): ')).trim().toLowerCase();
-    if (!answer || answer === '1' || answer === 'normal' || answer === 'n') {
+    const answer = (await readline.question('Start mode [1/regular, 2/developer] (default: regular): '))
+      .trim()
+      .toLowerCase();
+    if (
+      !answer ||
+      answer === '1' ||
+      answer === 'regular' ||
+      answer === 'normal' ||
+      answer === 'n'
+    ) {
       return 'normal';
     }
-    if (answer === '2' || answer === 'dev' || answer === 'd') {
+    if (answer === '2' || answer === 'dev' || answer === 'developer' || answer === 'd') {
       return 'dev';
     }
-    throw new Error(`Unknown launch mode "${answer}". Use normal or dev.`);
+    throw new Error(`Unknown launch mode "${answer}". Use regular or developer.`);
   } finally {
     readline.close();
   }
@@ -1074,6 +1243,8 @@ async function buildForNormalMode(pm, releaseBundle) {
 }
 
 async function main() {
+  printGaiaChatBanner();
+
   if (!existsSync(join(rootDir, 'package.json'))) {
     throw new Error(`Could not find Current repo root from ${rootDir}`);
   }
@@ -1107,29 +1278,41 @@ async function main() {
     console.log(`[Current] Port override: ${portOverride}`);
   }
   console.log(`[Current] The server will be available at ${launchConfig.url} after startup.`);
-  if (instance === 'lan') {
-    const urls = localLanUrls(launchConfig.port);
-    if (urls.length > 0) {
-      console.log(`[Current] LAN clients can try: ${urls.join(', ')}`);
-    }
-  }
 
   if (checkOnly) {
     console.log('[Current] Launcher check passed.');
     return;
   }
 
-  const shouldStart = await ensurePortAvailable(launchConfig);
-  if (!shouldStart) {
+  const selectedLaunchConfig = await ensurePortAvailable(launchConfig);
+  if (!selectedLaunchConfig) {
     return;
+  }
+  const selectedPortOverride =
+    portOverride || selectedLaunchConfig.port !== launchConfig.port
+      ? selectedLaunchConfig.port
+      : null;
+  if (selectedLaunchConfig.port !== launchConfig.port) {
+    console.log(`[Current] New session port: ${selectedLaunchConfig.port}`);
+    console.log(
+      `[Current] The server will be available at ${selectedLaunchConfig.url} after startup.`,
+    );
+  }
+  if (instance === 'lan') {
+    const urls = localLanUrls(selectedLaunchConfig.port);
+    if (urls.length > 0) {
+      console.log(`[Current] LAN clients can try: ${urls.join(', ')}`);
+    }
   }
 
   if (mode === 'dev') {
-    console.log('[Current] Starting dev server with source watchers. Press Ctrl+C in this terminal to stop it.');
+    console.log(
+      '[Current] Starting dev server with source watchers. Press Ctrl+C in this terminal to stop it.',
+    );
     await run(...pm(['dev']), 'Current dev server', {
       CURRENT_CONFIG_PATH: configPath,
       CURRENT_SERVER_INSTANCE: instance,
-      ...(portOverride ? { CURRENT_PORT: String(portOverride) } : {}),
+      ...(selectedPortOverride ? { CURRENT_PORT: String(selectedPortOverride) } : {}),
     });
     return;
   }
@@ -1142,7 +1325,7 @@ async function main() {
   await run(...normalServer, 'Current normal server', {
     CURRENT_CONFIG_PATH: configPath,
     CURRENT_SERVER_INSTANCE: instance,
-    ...(portOverride ? { CURRENT_PORT: String(portOverride) } : {}),
+    ...(selectedPortOverride ? { CURRENT_PORT: String(selectedPortOverride) } : {}),
     CURRENT_WEB_DIST_DIR: webDistDir,
   });
 }
