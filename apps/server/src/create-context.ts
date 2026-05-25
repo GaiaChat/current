@@ -1,5 +1,6 @@
 import type { CurrentConfig } from '@current/config';
 import type { DatabaseSync } from 'node:sqlite';
+import type { VoiceCameraShare, VoiceScreenShare } from '@current/types';
 import { createRepositories } from './db/repositories/index.js';
 import { MetricsService } from './metrics/metrics-service.js';
 import { ServerConfigService } from './services/server-config-service.js';
@@ -12,7 +13,7 @@ import { ChatService } from './services/chat-service.js';
 import { AtprotoBlockService } from './services/atproto-block-service.js';
 import { VoiceService } from './voice/voice-service.js';
 import type { VoiceSfuAdapter } from './voice/voice-sfu-types.js';
-import { VoiceScreenShareService } from './voice/voice-screen-share-service.js';
+import { VoiceMediaShareService } from './voice/voice-media-share-service.js';
 import { GatewayService } from './realtime/gateway-service.js';
 import type { AppContext } from './types/context.js';
 import { GatewayEvents } from '@current/protocol';
@@ -52,7 +53,20 @@ export function createAppContext(input: {
     },
     input.voiceSfu,
   );
-  const screenShare = new VoiceScreenShareService(() => serverConfig.get());
+  const screenShare = new VoiceMediaShareService<VoiceScreenShare>(() => serverConfig.get(), {
+    kind: 'screen',
+    idPrefix: 'vss',
+    disabledMessage: 'Screen sharing is disabled on this server.',
+    channelLimitMessage: 'This voice channel already has the maximum number of screen shares.',
+    getSettings: (config) => config.rtc.screenShare,
+  });
+  const cameraShare = new VoiceMediaShareService<VoiceCameraShare>(() => serverConfig.get(), {
+    kind: 'camera',
+    idPrefix: 'vcs',
+    disabledMessage: 'Camera sharing is disabled on this server.',
+    channelLimitMessage: 'This voice channel already has the maximum number of camera shares.',
+    getSettings: (config) => config.rtc.camera,
+  });
 
   return {
     db: input.db,
@@ -69,6 +83,7 @@ export function createAppContext(input: {
     atprotoBlocks,
     voice,
     screenShare,
+    cameraShare,
     gateway,
     serverConfig,
   };

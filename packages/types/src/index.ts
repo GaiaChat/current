@@ -260,31 +260,43 @@ export interface VoiceProducer {
   paused: boolean;
 }
 
-export type VoiceScreenShareTransportMode = 'p2p_mesh';
+export type VoiceMediaShareKind = 'screen' | 'camera';
+export type VoiceMediaShareTransportMode = 'p2p_mesh';
+export type VoiceScreenShareTransportMode = VoiceMediaShareTransportMode;
+export type VoiceCameraShareTransportMode = VoiceMediaShareTransportMode;
 
-export interface VoiceScreenShareConstraints {
+export interface VoiceMediaShareConstraints {
   maxWidth: number;
   maxHeight: number;
   maxFrameRate: number;
   maxBitrateKbps: number;
 }
 
-export interface VoiceScreenShareSettings extends VoiceScreenShareConstraints {
+export interface VoiceMediaShareSettings extends VoiceMediaShareConstraints {
   enabled: boolean;
-  transportMode: VoiceScreenShareTransportMode;
+  transportMode: VoiceMediaShareTransportMode;
   maxActiveSharesPerChannel: number;
 }
 
-export interface VoiceScreenShare {
+export type VoiceScreenShareConstraints = VoiceMediaShareConstraints;
+export type VoiceScreenShareSettings = VoiceMediaShareSettings;
+export type VoiceCameraShareConstraints = VoiceMediaShareConstraints;
+export type VoiceCameraShareSettings = VoiceMediaShareSettings;
+
+export interface VoiceMediaShare {
   id: string;
+  kind: VoiceMediaShareKind;
   userId: string;
   channelId: string;
-  transportMode: VoiceScreenShareTransportMode;
-  constraints: VoiceScreenShareConstraints;
+  transportMode: VoiceMediaShareTransportMode;
+  constraints: VoiceMediaShareConstraints;
   startedAt: ISODate;
 }
 
-export type VoiceScreenShareSignal =
+export type VoiceScreenShare = VoiceMediaShare & { kind: 'screen' };
+export type VoiceCameraShare = VoiceMediaShare & { kind: 'camera' };
+
+export type VoiceMediaShareSignal =
   | {
       type: 'viewer-ready' | 'viewer-left';
     }
@@ -296,6 +308,9 @@ export type VoiceScreenShareSignal =
       type: 'ice';
       candidate: RTCIceCandidateInit;
     };
+
+export type VoiceScreenShareSignal = VoiceMediaShareSignal;
+export type VoiceCameraShareSignal = VoiceMediaShareSignal;
 
 export interface AckEnvelope<TType extends string, TPayload> {
   id: string;

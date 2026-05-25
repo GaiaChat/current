@@ -118,6 +118,25 @@ const CurrentConfigSchema = z.object({
         maxBitrateKbps: 2500,
         maxActiveSharesPerChannel: 2,
       }),
+    camera: z
+      .object({
+        enabled: z.boolean().default(true),
+        transportMode: z.enum(['p2p_mesh']).default('p2p_mesh'),
+        maxWidth: z.number().int().min(320).max(3840).default(1280),
+        maxHeight: z.number().int().min(240).max(2160).default(720),
+        maxFrameRate: z.number().int().min(1).max(60).default(30),
+        maxBitrateKbps: z.number().int().min(150).max(20_000).default(1800),
+        maxActiveSharesPerChannel: z.number().int().min(1).max(32).default(8),
+      })
+      .default({
+        enabled: true,
+        transportMode: 'p2p_mesh',
+        maxWidth: 1280,
+        maxHeight: 720,
+        maxFrameRate: 30,
+        maxBitrateKbps: 1800,
+        maxActiveSharesPerChannel: 8,
+      }),
   }),
   observability: z.object({
     metricsEnabled: z.boolean().default(true),
@@ -308,6 +327,15 @@ export function createDefaultConfig(partial: DeepPartial<CurrentConfig> = {}): C
         maxFrameRate: partial.rtc?.screenShare?.maxFrameRate ?? 30,
         maxBitrateKbps: partial.rtc?.screenShare?.maxBitrateKbps ?? 2500,
         maxActiveSharesPerChannel: partial.rtc?.screenShare?.maxActiveSharesPerChannel ?? 2,
+      },
+      camera: {
+        enabled: partial.rtc?.camera?.enabled ?? true,
+        transportMode: partial.rtc?.camera?.transportMode ?? 'p2p_mesh',
+        maxWidth: partial.rtc?.camera?.maxWidth ?? 1280,
+        maxHeight: partial.rtc?.camera?.maxHeight ?? 720,
+        maxFrameRate: partial.rtc?.camera?.maxFrameRate ?? 30,
+        maxBitrateKbps: partial.rtc?.camera?.maxBitrateKbps ?? 1800,
+        maxActiveSharesPerChannel: partial.rtc?.camera?.maxActiveSharesPerChannel ?? 8,
       },
     },
     observability: {

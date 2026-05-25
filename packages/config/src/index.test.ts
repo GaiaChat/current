@@ -24,6 +24,9 @@ describe('config schema', () => {
     expect(config.rtc.screenShare.transportMode).toBe('p2p_mesh');
     expect(config.rtc.screenShare.maxWidth).toBe(1280);
     expect(config.rtc.screenShare.maxHeight).toBe(720);
+    expect(config.rtc.camera.transportMode).toBe('p2p_mesh');
+    expect(config.rtc.camera.maxWidth).toBe(1280);
+    expect(config.rtc.camera.maxHeight).toBe(720);
   });
 
   it('migrates unknown versions into v1', () => {

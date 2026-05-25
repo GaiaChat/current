@@ -84,9 +84,17 @@ describe('voice SFU signaling routes', () => {
       },
     });
     expect(adminJoinResponse.statusCode).toBe(200);
-    const adminJoin = adminJoinResponse.json() as { sessionId: string; producers: unknown[] };
+    const adminJoin = adminJoinResponse.json() as {
+      sessionId: string;
+      producers: unknown[];
+      camera: { enabled: boolean; transportMode: string };
+      cameraShares: unknown[];
+    };
     expect(adminJoin.sessionId).toBeTruthy();
     expect(adminJoin.producers).toEqual([]);
+    expect(adminJoin.camera.enabled).toBe(true);
+    expect(adminJoin.camera.transportMode).toBe('p2p_mesh');
+    expect(adminJoin.cameraShares).toEqual([]);
 
     const sendTransportResponse = await app.inject({
       method: 'POST',
@@ -211,6 +219,74 @@ describe('voice SFU signaling routes', () => {
       },
     });
     expect(screenShareStopResponse.statusCode).toBe(204);
+
+    const cameraShareStartResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/voice/channels/${voiceChannel?.id}/camera-shares`,
+      cookies: {
+        current_session: 'voice_admin_session',
+      },
+      payload: {
+        sessionId: adminJoin.sessionId,
+      },
+    });
+    expect(cameraShareStartResponse.statusCode).toBe(200);
+    const cameraShareStart = cameraShareStartResponse.json() as {
+      share: { id: string; kind: string; userId: string; channelId: string; transportMode: string; constraints: { maxWidth: number; maxHeight: number; maxBitrateKbps: number } };
+      viewers: string[];
+    };
+    expect(cameraShareStart.share.kind).toBe('camera');
+    expect(cameraShareStart.share.userId).toBe(admin.id);
+    expect(cameraShareStart.share.channelId).toBe(voiceChannel?.id);
+    expect(cameraShareStart.share.transportMode).toBe('p2p_mesh');
+    expect(cameraShareStart.share.constraints.maxWidth).toBe(1280);
+    expect(cameraShareStart.share.constraints.maxHeight).toBe(720);
+    expect(cameraShareStart.share.constraints.maxBitrateKbps).toBe(1800);
+    expect(cameraShareStart.viewers).toContain('usr_voice_member');
+
+    const cameraShareListResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/voice/channels/${voiceChannel?.id}/camera-shares`,
+      cookies: {
+        current_session: 'voice_member_session',
+      },
+    });
+    expect(cameraShareListResponse.statusCode).toBe(200);
+    const cameraShareList = cameraShareListResponse.json() as {
+      shares: Array<{ id: string; kind: string }>;
+      settings: { transportMode: string };
+    };
+    expect(cameraShareList.shares.map((share) => share.id)).toContain(cameraShareStart.share.id);
+    expect(cameraShareList.shares.find((share) => share.id === cameraShareStart.share.id)?.kind).toBe('camera');
+    expect(cameraShareList.settings.transportMode).toBe('p2p_mesh');
+
+    const cameraShareSignalResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/voice/camera-shares/${cameraShareStart.share.id}/signal`,
+      cookies: {
+        current_session: 'voice_member_session',
+      },
+      payload: {
+        sessionId: memberJoin.sessionId,
+        targetUserId: admin.id,
+        signal: {
+          type: 'viewer-ready',
+        },
+      },
+    });
+    expect(cameraShareSignalResponse.statusCode).toBe(204);
+
+    const cameraShareStopResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/voice/camera-shares/${cameraShareStart.share.id}/stop`,
+      cookies: {
+        current_session: 'voice_admin_session',
+      },
+      payload: {
+        sessionId: adminJoin.sessionId,
+      },
+    });
+    expect(cameraShareStopResponse.statusCode).toBe(204);
 
     const recvTransportResponse = await app.inject({
       method: 'POST',

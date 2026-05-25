@@ -1,6 +1,12 @@
 import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import { configExists, createDefaultConfig, loadConfig, saveConfig, type CurrentConfig } from '@current/config';
+import {
+  configExists,
+  createDefaultConfig,
+  loadConfig,
+  saveConfig,
+  type CurrentConfig,
+} from '@current/config';
 import { createDb } from './db/client.js';
 import { createAppContext } from './create-context.js';
 import { buildApp } from './app.js';
@@ -58,28 +64,29 @@ function isLoopbackUrl(value: string): boolean {
 function withPort(value: string, port: number): string {
   const parsed = new URL(value);
   parsed.port = String(port);
-  return parsed.toString();
+  const next = parsed.toString();
+  return parsed.pathname === '/' && !parsed.search && !parsed.hash ? next.replace(/\/$/, '') : next;
 }
 
-function applyPortOverride(config: CurrentConfig, portOverride: number | null): CurrentConfig {
-  if (!portOverride) {
-    return config;
-  }
+function withLoopbackPort(value: string, port: number): string {
+  return isLoopbackUrl(value) ? withPort(value, port) : value;
+}
 
+function applyRuntimeNetworkConfig(
+  config: CurrentConfig,
+  portOverride: number | null,
+): CurrentConfig {
+  const port = portOverride ?? config.server.port;
   return createDefaultConfig({
     ...config,
     server: {
       ...config.server,
-      port: portOverride,
-      publicUrl: isLoopbackUrl(config.server.publicUrl)
-        ? withPort(config.server.publicUrl, portOverride)
-        : config.server.publicUrl,
+      port,
+      publicUrl: withLoopbackPort(config.server.publicUrl, port),
     },
     auth: {
       ...config.auth,
-      redirectUri: isLoopbackUrl(config.auth.redirectUri)
-        ? withPort(config.auth.redirectUri, portOverride)
-        : config.auth.redirectUri,
+      redirectUri: withLoopbackPort(config.auth.redirectUri, port),
     },
   });
 }
@@ -125,7 +132,8 @@ function createInitialConfig(): CurrentConfig {
 }
 
 async function main() {
-  const configPath = process.env.CURRENT_CONFIG_PATH ?? join(process.cwd(), 'config/current.config.json');
+  const configPath =
+    process.env.CURRENT_CONFIG_PATH ?? join(process.cwd(), 'config/current.config.json');
   const portOverride = parsePortOverride();
 
   if (!configExists(configPath)) {
@@ -134,7 +142,7 @@ async function main() {
     saveConfig(configPath, defaultConfig);
   }
 
-  const config = applyPortOverride(loadConfig(configPath), portOverride);
+  const config = applyRuntimeNetworkConfig(loadConfig(configPath), portOverride);
   const db = createDb(config.storage.sqlitePath);
   const context = createAppContext({
     db,

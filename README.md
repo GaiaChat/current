@@ -79,7 +79,7 @@ chmod +x "Install Current Linux.sh" "Current Server Linux.sh"
 ./Current\ Server\ Linux.sh
 ```
 
-The run launcher checks first-time setup before any prompts, installs dependencies only when `node_modules` is missing or dependencies changed, starts the server in a terminal, and keeps the terminal attached so you can stop it with `Ctrl+C`.
+The run launcher asks how to start, checks first-time setup, installs dependencies only when `node_modules` is missing or dependencies changed, starts the server in a terminal, and keeps the terminal attached so you can stop it with `Ctrl+C`.
 It will ask which server instance to run:
 
 - Standard: the normal Current server using `apps/server/config/current.config.json`
@@ -90,7 +90,7 @@ It will ask for a launch mode:
 - Normal: builds once, then runs the server without source watchers
 - Dev: builds/watches the web GUI and restarts the server on source changes
 
-If the configured port is already in use, the launcher will stop before building and offer to open the existing server, stop the process using that port, retry, or exit.
+If the configured port is already in use, the launcher will stop before building and offer to open the existing server, stop the process using that port, start this session on a different port, retry, or exit.
 
 Open `http://127.0.0.1:6414` for the standard instance, or `http://127.0.0.1:8081` for the LAN instance.
 

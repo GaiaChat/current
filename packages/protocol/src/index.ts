@@ -2,6 +2,8 @@ import type {
   CurrentUser,
   Message,
   UserPresence,
+  VoiceCameraShare,
+  VoiceCameraShareSignal,
   VoiceProducer,
   VoiceScreenShare,
   VoiceScreenShareSignal,
@@ -34,6 +36,9 @@ export type ServerEventType =
   | 'VOICE_SCREEN_SHARE_STARTED'
   | 'VOICE_SCREEN_SHARE_STOPPED'
   | 'VOICE_SCREEN_SHARE_SIGNAL'
+  | 'VOICE_CAMERA_SHARE_STARTED'
+  | 'VOICE_CAMERA_SHARE_STOPPED'
+  | 'VOICE_CAMERA_SHARE_SIGNAL'
   | 'VOICE_SPEAKING'
   | 'SERVER_UPDATE'
   | 'MEMBER_UPDATE'
@@ -121,6 +126,24 @@ export interface VoiceScreenShareSignalPayload {
   signal: VoiceScreenShareSignal;
 }
 
+export interface VoiceCameraShareStartedPayload {
+  cameraShare: VoiceCameraShare;
+}
+
+export interface VoiceCameraShareStoppedPayload {
+  shareId: string;
+  channelId: string;
+  userId: string;
+}
+
+export interface VoiceCameraShareSignalPayload {
+  channelId: string;
+  shareId: string;
+  fromUserId: string;
+  targetUserId: string;
+  signal: VoiceCameraShareSignal;
+}
+
 export interface ModActionPayload {
   type: 'ban' | 'mute' | 'timeout' | 'kick' | 'warn';
   targetUserId: string;
@@ -179,6 +202,9 @@ export const GatewayEvents = {
   VOICE_SCREEN_SHARE_STARTED: 'VOICE_SCREEN_SHARE_STARTED',
   VOICE_SCREEN_SHARE_STOPPED: 'VOICE_SCREEN_SHARE_STOPPED',
   VOICE_SCREEN_SHARE_SIGNAL: 'VOICE_SCREEN_SHARE_SIGNAL',
+  VOICE_CAMERA_SHARE_STARTED: 'VOICE_CAMERA_SHARE_STARTED',
+  VOICE_CAMERA_SHARE_STOPPED: 'VOICE_CAMERA_SHARE_STOPPED',
+  VOICE_CAMERA_SHARE_SIGNAL: 'VOICE_CAMERA_SHARE_SIGNAL',
   VOICE_SPEAKING: 'VOICE_SPEAKING',
   SERVER_UPDATE: 'SERVER_UPDATE',
   MEMBER_UPDATE: 'MEMBER_UPDATE',

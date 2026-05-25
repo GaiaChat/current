@@ -181,6 +181,17 @@ const AdminSettingsPatchSchema = z
             maxActiveSharesPerChannel: z.number().int().min(1).max(8).optional(),
           })
           .optional(),
+        camera: z
+          .object({
+            enabled: z.boolean().optional(),
+            transportMode: z.enum(['p2p_mesh']).optional(),
+            maxWidth: z.number().int().min(320).max(3840).optional(),
+            maxHeight: z.number().int().min(240).max(2160).optional(),
+            maxFrameRate: z.number().int().min(1).max(60).optional(),
+            maxBitrateKbps: z.number().int().min(150).max(20_000).optional(),
+            maxActiveSharesPerChannel: z.number().int().min(1).max(32).optional(),
+          })
+          .optional(),
       })
       .optional(),
     observability: z
@@ -505,6 +516,7 @@ function buildRedactedConfig(app: FastifyInstance, config: CurrentConfig) {
       turnUsernameConfigured: Boolean(config.rtc.turnUsername?.trim()),
       turnCredentialConfigured: Boolean(config.rtc.turnCredential?.trim()),
       screenShare: config.rtc.screenShare,
+      camera: config.rtc.camera,
     },
     observability: config.observability,
   };
@@ -706,6 +718,7 @@ function buildConfigPatch(
         ? ''
         : body.rtc.turnCredential ?? current.rtc.turnCredential,
       screenShare: body.rtc.screenShare,
+      camera: body.rtc.camera,
     };
   }
 

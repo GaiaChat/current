@@ -3,6 +3,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -29,7 +30,9 @@ type GifProvider = 'klipy' | 'giphy';
 type GifFallbackProvider = 'none' | GifProvider;
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type LinkPolicy = 'allow' | 'members_only' | 'deny';
-type ScreenShareTransportMode = 'p2p_mesh';
+type VoiceShareTransportMode = 'p2p_mesh';
+type ScreenShareTransportMode = VoiceShareTransportMode;
+type CameraShareTransportMode = VoiceShareTransportMode;
 type ServerAssetKind = 'icon' | 'banner' | 'background';
 type SettingsSection =
   | 'overview'
@@ -157,6 +160,15 @@ interface RedactedConfig {
       maxBitrateKbps: number;
       maxActiveSharesPerChannel: number;
     };
+    camera: {
+      enabled: boolean;
+      transportMode: CameraShareTransportMode;
+      maxWidth: number;
+      maxHeight: number;
+      maxFrameRate: number;
+      maxBitrateKbps: number;
+      maxActiveSharesPerChannel: number;
+    };
   };
   observability: {
     metricsEnabled: boolean;
@@ -209,6 +221,13 @@ interface SharedIpGroupPayload {
     displayName: string;
     avatarUrl?: string;
   }>;
+}
+
+interface SettingsSectionDefinition {
+  id: SettingsSection;
+  label: string;
+  summary: string;
+  group: string;
 }
 
 interface ModerationLogEntryPayload {
@@ -301,6 +320,15 @@ interface SettingsDraft {
       maxBitrateKbps: number;
       maxActiveSharesPerChannel: number;
     };
+    camera: {
+      enabled: boolean;
+      transportMode: CameraShareTransportMode;
+      maxWidth: number;
+      maxHeight: number;
+      maxFrameRate: number;
+      maxBitrateKbps: number;
+      maxActiveSharesPerChannel: number;
+    };
   };
   observability: {
     metricsEnabled: boolean;
@@ -316,6 +344,16 @@ const DEFAULT_SCREEN_SHARE_SETTINGS: SettingsDraft['rtc']['screenShare'] = {
   maxFrameRate: 30,
   maxBitrateKbps: 2500,
   maxActiveSharesPerChannel: 2,
+};
+
+const DEFAULT_CAMERA_SHARE_SETTINGS: SettingsDraft['rtc']['camera'] = {
+  enabled: true,
+  transportMode: 'p2p_mesh',
+  maxWidth: 1280,
+  maxHeight: 720,
+  maxFrameRate: 30,
+  maxBitrateKbps: 1800,
+  maxActiveSharesPerChannel: 8,
 };
 
 type E2eeSettingsState = E2eeKeyState | { status: 'loading' };
@@ -335,20 +373,22 @@ const PERMISSIONS: Permission[] = [
   'USE_GIFS',
 ];
 
-const SECTION_DEFS: Array<{ id: SettingsSection; label: string; summary: string }> = [
-  { id: 'overview', label: 'Overview', summary: 'Identity, access, and server branding.' },
-  { id: 'look', label: 'Look', summary: 'Panel backgrounds and chat surface styling.' },
-  { id: 'roles', label: 'Roles', summary: 'Create roles and tune server-wide permissions.' },
-  { id: 'members', label: 'Members', summary: 'Assign roles and apply moderation actions.' },
-  { id: 'channels', label: 'Channels', summary: 'Edit channels and permission overwrites.' },
-  { id: 'invites', label: 'Invites', summary: 'Create and revoke invite links.' },
-  { id: 'automod', label: 'Automod', summary: 'Manage automated moderation rules.' },
-  { id: 'logs', label: 'Moderation Log', summary: 'Review audit and moderation activity.' },
-  { id: 'security', label: 'Security', summary: 'Inspect shared IP and safety signals.' },
-  { id: 'encryption', label: 'Encryption', summary: 'Manage browser-held room encryption keys.' },
-  { id: 'advanced', label: 'Advanced Config', summary: 'Edit runtime and restart-scoped server config.' },
-  { id: 'ownership', label: 'Ownership', summary: 'Transfer server ownership safely.' },
-  { id: 'factory-reset', label: 'Factory Reset', summary: 'Erase this server and return to setup.' },
+const SECTION_GROUPS = ['Essentials', 'Community', 'Safety', 'System', 'Owner tools'] as const;
+
+const SECTION_DEFS: SettingsSectionDefinition[] = [
+  { id: 'overview', label: 'Overview', summary: 'Name, access, and server identity.', group: 'Essentials' },
+  { id: 'look', label: 'Appearance', summary: 'Backgrounds and chat surface colors.', group: 'Essentials' },
+  { id: 'roles', label: 'Roles', summary: 'Server-wide permissions.', group: 'Community' },
+  { id: 'members', label: 'Members', summary: 'Roles and moderation actions.', group: 'Community' },
+  { id: 'channels', label: 'Channels', summary: 'Channel details and overwrites.', group: 'Community' },
+  { id: 'invites', label: 'Invites', summary: 'Invite links and usage limits.', group: 'Community' },
+  { id: 'automod', label: 'Automod', summary: 'Automated moderation rules.', group: 'Safety' },
+  { id: 'logs', label: 'Logs', summary: 'Audit and moderation activity.', group: 'Safety' },
+  { id: 'security', label: 'Security', summary: 'Shared IP and safety signals.', group: 'Safety' },
+  { id: 'encryption', label: 'Encryption', summary: 'Browser-held room keys.', group: 'Safety' },
+  { id: 'advanced', label: 'System', summary: 'Uploads, voice, networking, and runtime config.', group: 'System' },
+  { id: 'ownership', label: 'Ownership', summary: 'Transfer owner controls.', group: 'Owner tools' },
+  { id: 'factory-reset', label: 'Factory Reset', summary: 'Erase this server and return to setup.', group: 'Owner tools' },
 ];
 
 const FACTORY_RESET_CONFIRMATION = 'RESET CURRENT SERVER';
@@ -628,6 +668,10 @@ function createDraft(payload: ServerSettingsPayload): SettingsDraft {
     ...DEFAULT_SCREEN_SHARE_SETTINGS,
     ...(rtcConfig.screenShare ?? {}),
   };
+  const camera = {
+    ...DEFAULT_CAMERA_SHARE_SETTINGS,
+    ...(rtcConfig.camera ?? {}),
+  };
 
   return {
     server: {
@@ -701,6 +745,7 @@ function createDraft(payload: ServerSettingsPayload): SettingsDraft {
       turnCredential: '',
       clearTurnCredential: false,
       screenShare,
+      camera,
     },
     observability: {
       metricsEnabled: observabilityConfig.metricsEnabled ?? true,
@@ -751,7 +796,6 @@ function buildSettingsPatch(draft: SettingsDraft) {
       name: draft.server.name,
       slug: draft.server.slug,
       host: draft.server.host,
-      port: Number(draft.server.port),
       publicUrl: draft.server.publicUrl,
       registrationMode: draft.server.registrationMode,
       iconAttachmentId: draft.server.iconAttachmentId || null,
@@ -850,6 +894,15 @@ function buildSettingsPatch(draft: SettingsDraft) {
         maxFrameRate: Number(draft.rtc.screenShare.maxFrameRate),
         maxBitrateKbps: Number(draft.rtc.screenShare.maxBitrateKbps),
         maxActiveSharesPerChannel: Number(draft.rtc.screenShare.maxActiveSharesPerChannel),
+      },
+      camera: {
+        enabled: draft.rtc.camera.enabled,
+        transportMode: draft.rtc.camera.transportMode,
+        maxWidth: Number(draft.rtc.camera.maxWidth),
+        maxHeight: Number(draft.rtc.camera.maxHeight),
+        maxFrameRate: Number(draft.rtc.camera.maxFrameRate),
+        maxBitrateKbps: Number(draft.rtc.camera.maxBitrateKbps),
+        maxActiveSharesPerChannel: Number(draft.rtc.camera.maxActiveSharesPerChannel),
       },
     },
     observability: {
@@ -1055,8 +1108,12 @@ export function ServerSettingsModal({
     if (!query) {
       return true;
     }
-    return `${section.label} ${section.summary}`.toLowerCase().includes(query);
+    return `${section.group} ${section.label} ${section.summary}`.toLowerCase().includes(query);
   });
+  const visibleSectionGroups = SECTION_GROUPS.map((group) => ({
+    group,
+    sections: visibleSections.filter((section) => section.group === group),
+  })).filter((entry) => entry.sections.length > 0);
 
   useEffect(() => {
     if (!open) {
@@ -1840,6 +1897,20 @@ export function ServerSettingsModal({
     </span>
   );
 
+  const renderSettingsSectionGroup = (
+    title: string,
+    summary: string,
+    children: ReactNode,
+  ) => (
+    <section className="settings-advanced-section">
+      <header className="settings-advanced-section-header">
+        <span>{title}</span>
+        <p>{summary}</p>
+      </header>
+      {children}
+    </section>
+  );
+
   const renderOverview = () => {
     if (!draft) {
       return <div className="settings-empty-inline">Loading server settings...</div>;
@@ -2602,109 +2673,173 @@ export function ServerSettingsModal({
         },
       });
     };
+    const updateCameraShare = (patch: Partial<SettingsDraft['rtc']['camera']>) => {
+      updateDraft('rtc', {
+        camera: {
+          ...draft.rtc.camera,
+          ...patch,
+        },
+      });
+    };
     return (
-      <div className="settings-panel-grid">
-        <section className="settings-panel">
-          <h3>Network</h3>
-          <div className="settings-two-col">
-            <label>{renderFieldLabel('Host', 'server.host')}<input value={draft.server.host} onChange={(event) => updateDraft('server', { host: event.target.value })} /></label>
-            <label>{renderFieldLabel('Port', 'server.port')}<input type="number" value={draft.server.port} onChange={(event) => updateDraft('server', { port: Number(event.target.value) })} /></label>
-          </div>
-          <label>{renderFieldLabel('Public URL')}<input value={draft.server.publicUrl} onChange={(event) => updateDraft('server', { publicUrl: event.target.value })} /></label>
-          <label className="settings-check-row padded"><input type="checkbox" checked={draft.server.tlsEnabled} onChange={(event) => updateDraft('server', { tlsEnabled: event.target.checked })} /><span>Enable HTTPS</span></label>
-          <label>{renderFieldLabel('TLS cert path', 'server.tls')}<input value={draft.server.tlsCertPath} onChange={(event) => updateDraft('server', { tlsCertPath: event.target.value })} /></label>
-          <label>{renderFieldLabel('TLS key path', 'server.tls')}<input value={draft.server.tlsKeyPath} onChange={(event) => updateDraft('server', { tlsKeyPath: event.target.value })} /></label>
-        </section>
-        <section className="settings-panel">
-          <h3>OAuth</h3>
-          <label>{renderFieldLabel('Client ID')}<input value={draft.auth.atprotoClientId} onChange={(event) => updateDraft('auth', { atprotoClientId: event.target.value })} /></label>
-          <label>{renderFieldLabel('Redirect URI')}<input value={draft.auth.redirectUri} onChange={(event) => updateDraft('auth', { redirectUri: event.target.value })} /></label>
-          <label>{renderFieldLabel('Scope')}<input value={draft.auth.scope} onChange={(event) => updateDraft('auth', { scope: event.target.value })} /></label>
-          <label>{renderFieldLabel('Cookie secret')}<input type="password" value={draft.auth.cookieSecret} placeholder={settingsQuery.data?.secrets?.cookieSecretConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('auth', { cookieSecret: event.target.value })} /></label>
-          <label className="settings-check-row padded"><input type="checkbox" checked={draft.auth.allowDevLogin} onChange={(event) => updateDraft('auth', { allowDevLogin: event.target.checked })} /><span>Allow dev login</span></label>
-        </section>
-        <section className="settings-panel">
-          <h3>Storage & Media</h3>
-          <label>{renderFieldLabel('SQLite path', 'storage.sqlitePath')}<input value={draft.storage.sqlitePath} onChange={(event) => updateDraft('storage', { sqlitePath: event.target.value })} /></label>
-          <label>{renderFieldLabel('Upload dir', 'storage.uploadDir')}<input value={draft.storage.uploadDir} onChange={(event) => updateDraft('storage', { uploadDir: event.target.value })} /></label>
-          <label>{renderFieldLabel('Media backend', 'storage.mediaBackend')}<select value={draft.storage.mediaBackend} onChange={(event) => updateDraft('storage', { mediaBackend: event.target.value as MediaBackend })}><option value="local">Local</option><option value="s3">S3</option></select></label>
-          <label>
-            {renderFieldLabel('Attachment limit (MB)')}
-            <input
-              type="number"
-              min="1"
-              max={MAX_ATTACHMENT_MIB}
-              step="1"
-              value={bytesToMib(draft.media.maxAttachmentBytes)}
-              onChange={(event) => updateDraft('media', { maxAttachmentBytes: mibToBytes(Number(event.target.value)) })}
-            />
-          </label>
-          <label>{renderFieldLabel('Allowed MIME prefixes')}<textarea value={draft.media.allowedMimePrefixesText} onChange={(event) => updateDraft('media', { allowedMimePrefixesText: event.target.value })} /></label>
-          <label>{renderFieldLabel('GIF service')}<select value={draft.media.gifProvider} onChange={(event) => {
-            const gifProvider = event.target.value as GifProvider;
-            updateDraft('media', {
-              gifProvider,
-              gifFallbackProvider: draft.media.gifFallbackProvider === gifProvider ? 'none' : draft.media.gifFallbackProvider,
-            });
-          }}><option value="klipy">Klipy</option><option value="giphy">Giphy</option></select></label>
-          <label>{renderFieldLabel('GIF backup service')}<select value={draft.media.gifFallbackProvider} onChange={(event) => updateDraft('media', { gifFallbackProvider: event.target.value as GifFallbackProvider })}><option value="none">None</option><option value="klipy" disabled={draft.media.gifProvider === 'klipy'}>Klipy</option><option value="giphy" disabled={draft.media.gifProvider === 'giphy'}>Giphy</option></select></label>
-          <label>{renderFieldLabel('Klipy API key')}<input type="password" value={draft.media.klipyApiKey} placeholder={settingsQuery.data?.secrets?.klipyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { klipyApiKey: event.target.value, clearKlipyApiKey: false })} /></label>
-          <label className="settings-check-row padded"><input type="checkbox" checked={draft.media.clearKlipyApiKey} onChange={(event) => updateDraft('media', { clearKlipyApiKey: event.target.checked, klipyApiKey: '' })} /><span>Clear Klipy API key on save</span></label>
-          <label>{renderFieldLabel('Giphy API key')}<input type="password" value={draft.media.giphyApiKey} placeholder={settingsQuery.data?.secrets?.giphyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { giphyApiKey: event.target.value, clearGiphyApiKey: false })} /></label>
-          <label className="settings-check-row padded"><input type="checkbox" checked={draft.media.clearGiphyApiKey} onChange={(event) => updateDraft('media', { clearGiphyApiKey: event.target.checked, giphyApiKey: '' })} /><span>Clear Giphy API key on save</span></label>
-        </section>
-        <section className="settings-panel">
-          <h3>Moderation Defaults</h3>
-          <label>{renderFieldLabel('Default slowmode')}<input type="number" value={draft.moderation.defaultSlowmodeSeconds} onChange={(event) => updateDraft('moderation', { defaultSlowmodeSeconds: Number(event.target.value) })} /></label>
-          <label>{renderFieldLabel('Max mentions per message')}<input type="number" value={draft.moderation.maxMentionsPerMessage} onChange={(event) => updateDraft('moderation', { maxMentionsPerMessage: Number(event.target.value) })} /></label>
-          <label>{renderFieldLabel('Link policy')}<select value={draft.moderation.linkPolicy} onChange={(event) => updateDraft('moderation', { linkPolicy: event.target.value as LinkPolicy })}><option value="allow">Allow</option><option value="members_only">Members only</option><option value="deny">Deny</option></select></label>
-        </section>
-        <section className="settings-panel">
-          <h3>RTC</h3>
-          <div className="settings-two-col">
-            <label>{renderFieldLabel('Listen IP', 'rtc.listenIp')}<input value={draft.rtc.listenIp} onChange={(event) => updateDraft('rtc', { listenIp: event.target.value })} /></label>
-            <label>{renderFieldLabel('Announced IP', 'rtc.announcedIp')}<input value={draft.rtc.announcedIp} onChange={(event) => updateDraft('rtc', { announcedIp: event.target.value })} /></label>
-            <label>{renderFieldLabel('UDP min', 'rtc.udpMinPort')}<input type="number" value={draft.rtc.udpMinPort} onChange={(event) => updateDraft('rtc', { udpMinPort: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('UDP max', 'rtc.udpMaxPort')}<input type="number" value={draft.rtc.udpMaxPort} onChange={(event) => updateDraft('rtc', { udpMaxPort: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('SFU workers', 'rtc.workerCount')}<input type="number" min="0" max="8" value={draft.rtc.workerCount} onChange={(event) => updateDraft('rtc', { workerCount: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('Session timeout ms', 'rtc.sessionTimeoutMs')}<input type="number" min="5000" value={draft.rtc.sessionTimeoutMs} onChange={(event) => updateDraft('rtc', { sessionTimeoutMs: Number(event.target.value) })} /></label>
-          </div>
-          <label>{renderFieldLabel('TURN URLs', 'rtc.turnUrls')}<textarea value={draft.rtc.turnUrlsText} onChange={(event) => updateDraft('rtc', { turnUrlsText: event.target.value })} /></label>
-          <label>{renderFieldLabel('TURN username', 'rtc.turnUsername')}<input value={draft.rtc.turnUsername} placeholder={settingsQuery.data?.secrets?.turnUsernameConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnUsername: event.target.value, clearTurnUsername: false })} /></label>
-          <label>{renderFieldLabel('TURN credential', 'rtc.turnCredential')}<input type="password" value={draft.rtc.turnCredential} placeholder={settingsQuery.data?.secrets?.turnCredentialConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnCredential: event.target.value, clearTurnCredential: false })} /></label>
-        </section>
-        <section className="settings-panel">
-          <h3>Screen Share</h3>
-          <label className="settings-check-row padded">
-            <input
-              type="checkbox"
-              checked={draft.rtc.screenShare.enabled}
-              onChange={(event) => updateScreenShare({ enabled: event.target.checked })}
-            />
-            <span>Enabled</span>
-          </label>
-          <label>
-            {renderFieldLabel('Transport')}
-            <select
-              value={draft.rtc.screenShare.transportMode}
-              onChange={(event) => updateScreenShare({ transportMode: event.target.value as ScreenShareTransportMode })}
-            >
-              <option value="p2p_mesh">Peer mesh</option>
-            </select>
-          </label>
-          <div className="settings-two-col">
-            <label>{renderFieldLabel('Max width')}<input type="number" min="320" max="3840" step="16" value={draft.rtc.screenShare.maxWidth} onChange={(event) => updateScreenShare({ maxWidth: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('Max height')}<input type="number" min="240" max="2160" step="16" value={draft.rtc.screenShare.maxHeight} onChange={(event) => updateScreenShare({ maxHeight: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('Max FPS')}<input type="number" min="1" max="60" value={draft.rtc.screenShare.maxFrameRate} onChange={(event) => updateScreenShare({ maxFrameRate: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('Max bitrate kbps')}<input type="number" min="150" max="20000" step="50" value={draft.rtc.screenShare.maxBitrateKbps} onChange={(event) => updateScreenShare({ maxBitrateKbps: Number(event.target.value) })} /></label>
-            <label>{renderFieldLabel('Channel share limit')}<input type="number" min="1" max="8" value={draft.rtc.screenShare.maxActiveSharesPerChannel} onChange={(event) => updateScreenShare({ maxActiveSharesPerChannel: Number(event.target.value) })} /></label>
-          </div>
-        </section>
-        <section className="settings-panel">
-          <h3>Observability</h3>
-          <label className="settings-check-row padded"><input type="checkbox" checked={draft.observability.metricsEnabled} onChange={(event) => updateDraft('observability', { metricsEnabled: event.target.checked })} /><span>Metrics enabled</span></label>
-          <label>{renderFieldLabel('Log level', 'observability.logLevel')}<select value={draft.observability.logLevel} onChange={(event) => updateDraft('observability', { logLevel: event.target.value as LogLevel })}><option value="debug">Debug</option><option value="info">Info</option><option value="warn">Warn</option><option value="error">Error</option></select></label>
-        </section>
+      <div className="settings-advanced-stack">
+        {renderSettingsSectionGroup(
+          'Limits and media',
+          'Common server capacity controls live first. Provider credentials stay tucked into the same area.',
+          <div className="settings-panel-grid">
+            <section className="settings-panel">
+              <h3>Uploads</h3>
+              <label>
+                {renderFieldLabel('Attachment limit (MB)')}
+                <input
+                  type="number"
+                  min="1"
+                  max={MAX_ATTACHMENT_MIB}
+                  step="1"
+                  value={bytesToMib(draft.media.maxAttachmentBytes)}
+                  onChange={(event) => updateDraft('media', { maxAttachmentBytes: mibToBytes(Number(event.target.value)) })}
+                />
+              </label>
+              <label>
+                {renderFieldLabel('Allowed MIME prefixes')}
+                <textarea value={draft.media.allowedMimePrefixesText} onChange={(event) => updateDraft('media', { allowedMimePrefixesText: event.target.value })} />
+              </label>
+            </section>
+            <section className="settings-panel">
+              <h3>GIF Providers</h3>
+              <label>{renderFieldLabel('Primary service')}<select value={draft.media.gifProvider} onChange={(event) => {
+                const gifProvider = event.target.value as GifProvider;
+                updateDraft('media', {
+                  gifProvider,
+                  gifFallbackProvider: draft.media.gifFallbackProvider === gifProvider ? 'none' : draft.media.gifFallbackProvider,
+                });
+              }}><option value="klipy">Klipy</option><option value="giphy">Giphy</option></select></label>
+              <label>{renderFieldLabel('Fallback service')}<select value={draft.media.gifFallbackProvider} onChange={(event) => updateDraft('media', { gifFallbackProvider: event.target.value as GifFallbackProvider })}><option value="none">None</option><option value="klipy" disabled={draft.media.gifProvider === 'klipy'}>Klipy</option><option value="giphy" disabled={draft.media.gifProvider === 'giphy'}>Giphy</option></select></label>
+              <label>{renderFieldLabel('Klipy API key')}<input type="password" value={draft.media.klipyApiKey} placeholder={settingsQuery.data?.secrets?.klipyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { klipyApiKey: event.target.value, clearKlipyApiKey: false })} /></label>
+              <label className="settings-check-row padded"><input type="checkbox" checked={draft.media.clearKlipyApiKey} onChange={(event) => updateDraft('media', { clearKlipyApiKey: event.target.checked, klipyApiKey: '' })} /><span>Clear Klipy API key on save</span></label>
+              <label>{renderFieldLabel('Giphy API key')}<input type="password" value={draft.media.giphyApiKey} placeholder={settingsQuery.data?.secrets?.giphyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { giphyApiKey: event.target.value, clearGiphyApiKey: false })} /></label>
+              <label className="settings-check-row padded"><input type="checkbox" checked={draft.media.clearGiphyApiKey} onChange={(event) => updateDraft('media', { clearGiphyApiKey: event.target.checked, giphyApiKey: '' })} /><span>Clear Giphy API key on save</span></label>
+            </section>
+            <section className="settings-panel">
+              <h3>Moderation Defaults</h3>
+              <label>{renderFieldLabel('Default slowmode')}<input type="number" value={draft.moderation.defaultSlowmodeSeconds} onChange={(event) => updateDraft('moderation', { defaultSlowmodeSeconds: Number(event.target.value) })} /></label>
+              <label>{renderFieldLabel('Max mentions per message')}<input type="number" value={draft.moderation.maxMentionsPerMessage} onChange={(event) => updateDraft('moderation', { maxMentionsPerMessage: Number(event.target.value) })} /></label>
+              <label>{renderFieldLabel('Link policy')}<select value={draft.moderation.linkPolicy} onChange={(event) => updateDraft('moderation', { linkPolicy: event.target.value as LinkPolicy })}><option value="allow">Allow</option><option value="members_only">Members only</option><option value="deny">Deny</option></select></label>
+            </section>
+          </div>,
+        )}
+
+        {renderSettingsSectionGroup(
+          'Voice and media sharing',
+          'Realtime settings are grouped together so camera and screen share limits stay near the voice controls.',
+          <div className="settings-panel-grid">
+            <section className="settings-panel">
+              <h3>Screen Share</h3>
+              <label className="settings-check-row padded">
+                <input
+                  type="checkbox"
+                  checked={draft.rtc.screenShare.enabled}
+                  onChange={(event) => updateScreenShare({ enabled: event.target.checked })}
+                />
+                <span>Enabled</span>
+              </label>
+              <label>
+                {renderFieldLabel('Transport')}
+                <select
+                  value={draft.rtc.screenShare.transportMode}
+                  onChange={(event) => updateScreenShare({ transportMode: event.target.value as ScreenShareTransportMode })}
+                >
+                  <option value="p2p_mesh">Peer mesh</option>
+                </select>
+              </label>
+              <div className="settings-two-col">
+                <label>{renderFieldLabel('Max width')}<input type="number" min="320" max="3840" step="16" value={draft.rtc.screenShare.maxWidth} onChange={(event) => updateScreenShare({ maxWidth: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Max height')}<input type="number" min="240" max="2160" step="16" value={draft.rtc.screenShare.maxHeight} onChange={(event) => updateScreenShare({ maxHeight: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Max FPS')}<input type="number" min="1" max="60" value={draft.rtc.screenShare.maxFrameRate} onChange={(event) => updateScreenShare({ maxFrameRate: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Max bitrate kbps')}<input type="number" min="150" max="20000" step="50" value={draft.rtc.screenShare.maxBitrateKbps} onChange={(event) => updateScreenShare({ maxBitrateKbps: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Channel share limit')}<input type="number" min="1" max="8" value={draft.rtc.screenShare.maxActiveSharesPerChannel} onChange={(event) => updateScreenShare({ maxActiveSharesPerChannel: Number(event.target.value) })} /></label>
+              </div>
+            </section>
+            <section className="settings-panel">
+              <h3>Camera Share</h3>
+              <label className="settings-check-row padded">
+                <input
+                  type="checkbox"
+                  checked={draft.rtc.camera.enabled}
+                  onChange={(event) => updateCameraShare({ enabled: event.target.checked })}
+                />
+                <span>Enabled</span>
+              </label>
+              <label>
+                {renderFieldLabel('Transport')}
+                <select
+                  value={draft.rtc.camera.transportMode}
+                  onChange={(event) => updateCameraShare({ transportMode: event.target.value as CameraShareTransportMode })}
+                >
+                  <option value="p2p_mesh">Peer mesh</option>
+                </select>
+              </label>
+              <div className="settings-two-col">
+                <label>{renderFieldLabel('Max width')}<input type="number" min="320" max="3840" step="16" value={draft.rtc.camera.maxWidth} onChange={(event) => updateCameraShare({ maxWidth: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Max height')}<input type="number" min="240" max="2160" step="16" value={draft.rtc.camera.maxHeight} onChange={(event) => updateCameraShare({ maxHeight: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Max FPS')}<input type="number" min="1" max="60" value={draft.rtc.camera.maxFrameRate} onChange={(event) => updateCameraShare({ maxFrameRate: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Max bitrate kbps')}<input type="number" min="150" max="20000" step="50" value={draft.rtc.camera.maxBitrateKbps} onChange={(event) => updateCameraShare({ maxBitrateKbps: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Channel camera limit')}<input type="number" min="1" max="32" value={draft.rtc.camera.maxActiveSharesPerChannel} onChange={(event) => updateCameraShare({ maxActiveSharesPerChannel: Number(event.target.value) })} /></label>
+              </div>
+            </section>
+            <section className="settings-panel">
+              <h3>Voice Routing</h3>
+              <div className="settings-two-col">
+                <label>{renderFieldLabel('Listen IP', 'rtc.listenIp')}<input value={draft.rtc.listenIp} onChange={(event) => updateDraft('rtc', { listenIp: event.target.value })} /></label>
+                <label>{renderFieldLabel('Announced IP', 'rtc.announcedIp')}<input value={draft.rtc.announcedIp} onChange={(event) => updateDraft('rtc', { announcedIp: event.target.value })} /></label>
+                <label>{renderFieldLabel('UDP min', 'rtc.udpMinPort')}<input type="number" value={draft.rtc.udpMinPort} onChange={(event) => updateDraft('rtc', { udpMinPort: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('UDP max', 'rtc.udpMaxPort')}<input type="number" value={draft.rtc.udpMaxPort} onChange={(event) => updateDraft('rtc', { udpMaxPort: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('SFU workers', 'rtc.workerCount')}<input type="number" min="0" max="8" value={draft.rtc.workerCount} onChange={(event) => updateDraft('rtc', { workerCount: Number(event.target.value) })} /></label>
+                <label>{renderFieldLabel('Session timeout ms', 'rtc.sessionTimeoutMs')}<input type="number" min="5000" value={draft.rtc.sessionTimeoutMs} onChange={(event) => updateDraft('rtc', { sessionTimeoutMs: Number(event.target.value) })} /></label>
+              </div>
+              <label>{renderFieldLabel('TURN URLs', 'rtc.turnUrls')}<textarea value={draft.rtc.turnUrlsText} onChange={(event) => updateDraft('rtc', { turnUrlsText: event.target.value })} /></label>
+              <label>{renderFieldLabel('TURN username', 'rtc.turnUsername')}<input value={draft.rtc.turnUsername} placeholder={settingsQuery.data?.secrets?.turnUsernameConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnUsername: event.target.value, clearTurnUsername: false })} /></label>
+              <label>{renderFieldLabel('TURN credential', 'rtc.turnCredential')}<input type="password" value={draft.rtc.turnCredential} placeholder={settingsQuery.data?.secrets?.turnCredentialConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnCredential: event.target.value, clearTurnCredential: false })} /></label>
+            </section>
+          </div>,
+        )}
+
+        {renderSettingsSectionGroup(
+          'Host runtime',
+          'Lower-level server settings live last because they are usually changed once and may require a restart.',
+          <div className="settings-panel-grid">
+            <section className="settings-panel">
+              <h3>Network & TLS</h3>
+              <label>{renderFieldLabel('Host', 'server.host')}<input value={draft.server.host} onChange={(event) => updateDraft('server', { host: event.target.value })} /></label>
+              <label className="settings-check-row padded"><input type="checkbox" checked={draft.server.tlsEnabled} onChange={(event) => updateDraft('server', { tlsEnabled: event.target.checked })} /><span>Enable HTTPS</span></label>
+              <label>{renderFieldLabel('TLS cert path', 'server.tls')}<input value={draft.server.tlsCertPath} onChange={(event) => updateDraft('server', { tlsCertPath: event.target.value })} /></label>
+              <label>{renderFieldLabel('TLS key path', 'server.tls')}<input value={draft.server.tlsKeyPath} onChange={(event) => updateDraft('server', { tlsKeyPath: event.target.value })} /></label>
+            </section>
+            <section className="settings-panel">
+              <h3>OAuth</h3>
+              <label>{renderFieldLabel('Client ID')}<input value={draft.auth.atprotoClientId} onChange={(event) => updateDraft('auth', { atprotoClientId: event.target.value })} /></label>
+              <label>{renderFieldLabel('Redirect URI')}<input value={draft.auth.redirectUri} onChange={(event) => updateDraft('auth', { redirectUri: event.target.value })} /></label>
+              <label>{renderFieldLabel('Scope')}<input value={draft.auth.scope} onChange={(event) => updateDraft('auth', { scope: event.target.value })} /></label>
+              <label>{renderFieldLabel('Cookie secret')}<input type="password" value={draft.auth.cookieSecret} placeholder={settingsQuery.data?.secrets?.cookieSecretConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('auth', { cookieSecret: event.target.value })} /></label>
+              <label className="settings-check-row padded"><input type="checkbox" checked={draft.auth.allowDevLogin} onChange={(event) => updateDraft('auth', { allowDevLogin: event.target.checked })} /><span>Allow dev login</span></label>
+            </section>
+            <section className="settings-panel">
+              <h3>Storage</h3>
+              <label>{renderFieldLabel('SQLite path', 'storage.sqlitePath')}<input value={draft.storage.sqlitePath} onChange={(event) => updateDraft('storage', { sqlitePath: event.target.value })} /></label>
+              <label>{renderFieldLabel('Upload dir', 'storage.uploadDir')}<input value={draft.storage.uploadDir} onChange={(event) => updateDraft('storage', { uploadDir: event.target.value })} /></label>
+              <label>{renderFieldLabel('Media backend', 'storage.mediaBackend')}<select value={draft.storage.mediaBackend} onChange={(event) => updateDraft('storage', { mediaBackend: event.target.value as MediaBackend })}><option value="local">Local</option><option value="s3">S3</option></select></label>
+              <label>{renderFieldLabel('S3 endpoint')}<input value={draft.storage.s3Endpoint} onChange={(event) => updateDraft('storage', { s3Endpoint: event.target.value })} /></label>
+              <label>{renderFieldLabel('S3 bucket')}<input value={draft.storage.s3Bucket} onChange={(event) => updateDraft('storage', { s3Bucket: event.target.value })} /></label>
+              <label>{renderFieldLabel('S3 access key')}<input value={draft.storage.s3AccessKeyId} placeholder={settingsQuery.data?.secrets?.s3AccessKeyIdConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('storage', { s3AccessKeyId: event.target.value })} /></label>
+              <label>{renderFieldLabel('S3 secret key')}<input type="password" value={draft.storage.s3SecretAccessKey} placeholder={settingsQuery.data?.secrets?.s3SecretAccessKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('storage', { s3SecretAccessKey: event.target.value })} /></label>
+            </section>
+            <section className="settings-panel">
+              <h3>Observability</h3>
+              <label className="settings-check-row padded"><input type="checkbox" checked={draft.observability.metricsEnabled} onChange={(event) => updateDraft('observability', { metricsEnabled: event.target.checked })} /><span>Metrics enabled</span></label>
+              <label>{renderFieldLabel('Log level', 'observability.logLevel')}<select value={draft.observability.logLevel} onChange={(event) => updateDraft('observability', { logLevel: event.target.value as LogLevel })}><option value="debug">Debug</option><option value="info">Info</option><option value="warn">Warn</option><option value="error">Error</option></select></label>
+            </section>
+          </div>,
+        )}
       </div>
     );
   };
@@ -2738,10 +2873,17 @@ export function ServerSettingsModal({
 
   const renderFactoryReset = () => (
     <section className="settings-panel wide settings-danger-zone">
-      <h3>Factory Reset</h3>
-      <p className="settings-note">
-        This erases users, sessions, roles, channels, messages, invites, moderation history, audit logs, gateway history, and uploaded attachments. Server setup will run again after the reset.
-      </p>
+      <div className="settings-danger-heading">
+        <span>Destructive</span>
+        <h3>Factory Reset</h3>
+      </div>
+      <div className="settings-danger-callout">
+        <strong>This returns Current to setup.</strong>
+        <p>
+          Users, sessions, roles, channels, messages, invites, moderation history, audit logs, gateway history,
+          and uploaded attachments will be erased.
+        </p>
+      </div>
       <button className="danger" onClick={() => setFactoryResetConfirmOpen(true)}>
         Factory Reset Server
       </button>
@@ -2839,12 +2981,20 @@ export function ServerSettingsModal({
             <aside className="settings-nav glass-panel" aria-label="Server settings sections">
               <div className="settings-nav-scroll">
                 <input className="settings-search" placeholder="Search settings" value={settingsSearch} onChange={(event) => setSettingsSearch(event.target.value)} />
-                {visibleSections.map((section) => (
-                  <button key={section.id} className={activeSection === section.id ? 'active' : ''} onClick={() => setActiveSection(section.id)}>
-                    <span>{section.label}</span>
-                    <small>{section.summary}</small>
-                  </button>
+                {visibleSectionGroups.map(({ group, sections }) => (
+                  <div className="settings-nav-group" key={group}>
+                    <span className="settings-nav-group-label">{group}</span>
+                    {sections.map((section) => (
+                      <button key={section.id} className={activeSection === section.id ? 'active' : ''} onClick={() => setActiveSection(section.id)}>
+                        <span>{section.label}</span>
+                        <small>{section.summary}</small>
+                      </button>
+                    ))}
+                  </div>
                 ))}
+                {visibleSectionGroups.length === 0 && (
+                  <div className="settings-nav-empty">No settings match.</div>
+                )}
               </div>
             </aside>
 
@@ -2869,10 +3019,13 @@ export function ServerSettingsModal({
 
         {dirty && (
           <footer className="settings-save-bar glass-panel">
-            <span>You have unsaved server config changes.</span>
-            <div>
-              <button onClick={() => savedDraft && setDraft(savedDraft)} disabled={saveSettingsMutation.isPending}>Reset</button>
-              <button onClick={() => saveSettingsMutation.mutate()} disabled={saveSettingsMutation.isPending}>
+            <div className="settings-save-message">
+              <strong>Unsaved changes</strong>
+              <small>Server settings have changed locally.</small>
+            </div>
+            <div className="settings-save-actions">
+              <button type="button" onClick={() => savedDraft && setDraft(savedDraft)} disabled={saveSettingsMutation.isPending}>Reset</button>
+              <button type="button" onClick={() => saveSettingsMutation.mutate()} disabled={saveSettingsMutation.isPending}>
                 {saveSettingsMutation.isPending ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
@@ -2927,10 +3080,14 @@ export function ServerSettingsModal({
                 mode="prominent"
                 overLight={overLight}
               />
-              <h4>Confirm Factory Reset</h4>
-              <p>This will permanently erase the current server and return Current to setup.</p>
-              <label>
-                Confirmation phrase
+              <div className="settings-warning-title-row">
+                <span>Destructive action</span>
+                <h4>Confirm Factory Reset</h4>
+              </div>
+              <p>This permanently erases the current server and returns Current to setup.</p>
+              <label className="settings-confirm-phrase">
+                <span>Type this phrase to continue</span>
+                <code>{FACTORY_RESET_CONFIRMATION}</code>
                 <input
                   value={factoryResetConfirmation}
                   placeholder={FACTORY_RESET_CONFIRMATION}

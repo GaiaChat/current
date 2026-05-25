@@ -1444,7 +1444,7 @@ select {
 
 .voice-connection-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) repeat(2, auto);
   align-items: center;
   gap: 8px;
 }
@@ -2242,6 +2242,14 @@ select {
   height: 100%;
   object-fit: contain;
   background: #05080d;
+}
+
+.voice-screen-share-card.camera .voice-screen-share-video video {
+  object-fit: cover;
+}
+
+.voice-screen-share-video video.mirrored {
+  transform: scaleX(-1);
 }
 
 .voice-screen-share-placeholder {
@@ -5665,28 +5673,62 @@ textarea.action-modal-input {
 
 .settings-panel-color-trigger {
   min-width: 0;
+  min-height: 40px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border-radius: 999px !important;
-  padding: 5px 9px 5px 5px !important;
+  border: 1px solid rgba(235, 247, 255, 0.16) !important;
+  border-radius: 14px !important;
+  padding: 5px 11px 5px 5px !important;
+  background:
+    linear-gradient(180deg, rgba(235, 247, 255, 0.11), rgba(235, 247, 255, 0.038)),
+    rgb(var(--side-panel-surface-rgb) / 0.46) !important;
   color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 10px 22px rgba(0, 0, 0, 0.2);
 }
 
 .settings-panel-color-preview,
 .settings-panel-color-current {
+  position: relative;
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
   border: 1px solid rgba(235, 247, 255, 0.32);
   border-radius: 999px;
+  background-image:
+    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.46), transparent 32%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 8px 18px rgba(0, 0, 0, 0.22);
 }
 
+.settings-panel-color-preview::after,
+.settings-panel-color-current::after {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  border: 2px solid rgba(255, 255, 255, 0.76);
+  border-radius: inherit;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
 .settings-panel-color-preview.auto {
-  background: rgb(var(--side-panel-surface-rgb));
+  background-image:
+    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.46), transparent 32%),
+    conic-gradient(
+      from 45deg,
+      rgb(var(--brand-primary-rgb)),
+      rgb(var(--brand-alt-rgb)),
+      rgb(var(--own-message-surface-rgb)),
+      rgb(var(--other-message-surface-rgb)),
+      rgb(var(--brand-primary-rgb))
+    );
 }
 
 .settings-panel-color-controls {
@@ -5703,11 +5745,17 @@ textarea.action-modal-input {
 .settings-panel-color-hex {
   flex: 1 1 140px;
   min-width: 0;
-  text-transform: lowercase;
+  min-height: 38px;
+  border-radius: 999px;
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
 }
 
 .settings-color-reset {
-  min-height: 34px;
+  min-height: 38px;
+  border-radius: 999px;
+  font-weight: 900;
 }
 
 .settings-panel-color-popover {
@@ -8107,6 +8155,35 @@ select option {
   opacity: 1;
 }
 
+.settings-nav-group {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.settings-nav-group + .settings-nav-group {
+  margin-top: 8px;
+}
+
+.settings-nav-group-label {
+  padding: 0 4px;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-nav-empty {
+  border: 1px solid rgba(235, 247, 255, 0.14);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgb(var(--side-panel-surface-rgb) / 0.44);
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 .settings-modal.discord-settings .settings-nav button {
   border-radius: 14px;
   padding: 10px 12px;
@@ -8187,6 +8264,123 @@ select option {
     rgb(var(--side-panel-surface-rgb) / 0.68);
 }
 
+.settings-advanced-stack {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.settings-advanced-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-advanced-section-header {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid rgba(235, 247, 255, 0.12);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background:
+    linear-gradient(180deg, rgba(235, 247, 255, 0.07), rgba(235, 247, 255, 0.028)),
+    rgb(var(--side-panel-surface-rgb) / 0.52);
+}
+
+.settings-advanced-section-header span {
+  color: var(--ink);
+  font-family: 'Sora', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.settings-advanced-section-header p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.settings-danger-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-warning-title-row {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-warning-title-row h4 {
+  margin: 0;
+}
+
+.settings-danger-heading span,
+.settings-warning-title-row span {
+  width: fit-content;
+  border: 1px solid rgba(255, 107, 126, 0.34);
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(255, 107, 126, 0.1);
+  color: #ffd3da;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.settings-danger-callout {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(255, 107, 126, 0.24);
+  border-radius: 14px;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 107, 126, 0.12), rgba(255, 107, 126, 0.045)),
+    rgb(var(--side-panel-surface-rgb) / 0.42);
+}
+
+.settings-danger-callout strong {
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.settings-danger-callout p {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+.settings-confirm-phrase {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-confirm-phrase > span {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settings-confirm-phrase code {
+  width: fit-content;
+  border: 1px solid rgba(255, 210, 124, 0.32);
+  border-radius: 10px;
+  padding: 6px 9px;
+  background:
+    linear-gradient(180deg, rgba(255, 210, 124, 0.12), rgba(255, 210, 124, 0.045)),
+    rgb(var(--side-panel-surface-rgb) / 0.38);
+  color: #ffe3a3;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
 .settings-modal.discord-settings .settings-list {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -8207,6 +8401,29 @@ select option {
   background:
     linear-gradient(180deg, rgba(235, 247, 255, 0.08), rgba(235, 247, 255, 0.032)),
     rgb(var(--side-panel-surface-rgb) / 0.58);
+}
+
+.settings-save-message {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-save-message strong {
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.settings-save-message small {
+  color: var(--ink-soft);
+  font-weight: 750;
+}
+
+.settings-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .settings-modal-backdrop.settings-eyedropper-active {
@@ -8592,6 +8809,18 @@ select option {
     flex: 0 0 210px;
   }
 
+  .settings-modal.discord-settings .settings-nav-group {
+    display: contents;
+  }
+
+  .settings-modal.discord-settings .settings-nav-group-label {
+    display: none;
+  }
+
+  .settings-modal.discord-settings .settings-nav-empty {
+    flex: 0 0 210px;
+  }
+
   .settings-modal.discord-settings .settings-nav button {
     flex: 0 0 min(220px, 68vw);
   }
@@ -8630,6 +8859,11 @@ select option {
     left: 0;
     right: 0;
     bottom: 0;
+    flex-wrap: wrap;
+  }
+
+  .settings-save-actions {
+    justify-content: flex-start;
   }
 
   .settings-floating-error {

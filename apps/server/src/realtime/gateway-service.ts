@@ -561,6 +561,11 @@ export class GatewayService {
       this.addString(channelIds, screenShare.channelId);
     }
 
+    const cameraShare = this.getRecord(payload.cameraShare);
+    if (cameraShare) {
+      this.addString(channelIds, cameraShare.channelId);
+    }
+
     return [...channelIds];
   }
 

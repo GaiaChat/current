@@ -155,7 +155,10 @@ describe('admin settings and insights', () => {
         klipyApiKeyConfigured: boolean;
         giphyApiKeyConfigured: boolean;
       };
-      config: { media: { gifProvider: string; gifFallbackProvider: string; klipyApiKeyConfigured: boolean; giphyApiKeyConfigured: boolean } };
+      config: {
+        media: { gifProvider: string; gifFallbackProvider: string; klipyApiKeyConfigured: boolean; giphyApiKeyConfigured: boolean };
+        rtc: { camera: { enabled: boolean; maxWidth: number; maxHeight: number } };
+      };
     };
     expect(allowedPayload.serverVersion).toMatch(/^(dev|\d+\.\d+\.\d+(?:[-+].+)?)$/);
     expect(allowedPayload.auth.mode).toBe('atproto');
@@ -165,6 +168,9 @@ describe('admin settings and insights', () => {
     expect(allowedPayload.media.giphyApiKey).toBeUndefined();
     expect(allowedPayload.config.media.klipyApiKeyConfigured).toBe(true);
     expect(allowedPayload.config.media.giphyApiKeyConfigured).toBe(false);
+    expect(allowedPayload.config.rtc.camera.enabled).toBe(true);
+    expect(allowedPayload.config.rtc.camera.maxWidth).toBe(1280);
+    expect(allowedPayload.config.rtc.camera.maxHeight).toBe(720);
 
     const icon = context.chat.saveAttachment({
       fileName: 'server-icon.png',
@@ -215,6 +221,15 @@ describe('admin settings and insights', () => {
             maxBitrateKbps: 1800,
             maxActiveSharesPerChannel: 1,
           },
+          camera: {
+            enabled: false,
+            transportMode: 'p2p_mesh',
+            maxWidth: 1280,
+            maxHeight: 720,
+            maxFrameRate: 30,
+            maxBitrateKbps: 1200,
+            maxActiveSharesPerChannel: 4,
+          },
         },
       },
     });
@@ -238,6 +253,14 @@ describe('admin settings and insights', () => {
         };
         rtc: {
           screenShare: {
+            maxWidth: number;
+            maxHeight: number;
+            maxFrameRate: number;
+            maxBitrateKbps: number;
+            maxActiveSharesPerChannel: number;
+          };
+          camera: {
+            enabled: boolean;
             maxWidth: number;
             maxHeight: number;
             maxFrameRate: number;
@@ -272,6 +295,12 @@ describe('admin settings and insights', () => {
     expect(patched.config.rtc.screenShare.maxFrameRate).toBe(24);
     expect(patched.config.rtc.screenShare.maxBitrateKbps).toBe(1800);
     expect(patched.config.rtc.screenShare.maxActiveSharesPerChannel).toBe(1);
+    expect(patched.config.rtc.camera.enabled).toBe(false);
+    expect(patched.config.rtc.camera.maxWidth).toBe(1280);
+    expect(patched.config.rtc.camera.maxHeight).toBe(720);
+    expect(patched.config.rtc.camera.maxFrameRate).toBe(30);
+    expect(patched.config.rtc.camera.maxBitrateKbps).toBe(1200);
+    expect(patched.config.rtc.camera.maxActiveSharesPerChannel).toBe(4);
     expect(patched.auth.mode).toBe('lan');
     expect(patched.restartRequiredFields).toContain('server.host');
     expect(context.serverConfig.get().appearance.backgroundAttachmentId).toBe(messagesBackground.id);

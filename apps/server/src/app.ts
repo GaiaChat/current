@@ -68,6 +68,7 @@ export function buildApp(context: AppContext, options: BuildAppOptions = {}) {
 
   app.addHook('onClose', async () => {
     context.screenShare.close();
+    context.cameraShare.close();
     await context.voice.close();
   });
 

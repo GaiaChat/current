@@ -1,6 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const currentServerPort =
+  process.env.CURRENT_PORT ?? process.env.CURRENT_SERVER_PORT ?? process.env.PORT ?? '6414';
+const currentServerOrigin =
+  process.env.CURRENT_SERVER_ORIGIN ?? `http://127.0.0.1:${currentServerPort}`;
+const currentServerWebSocketOrigin = currentServerOrigin.replace(/^http/i, 'ws');
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -8,12 +14,12 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8080',
+        target: currentServerOrigin,
         changeOrigin: true,
         xfwd: true,
       },
       '/gateway': {
-        target: 'ws://127.0.0.1:8080',
+        target: currentServerWebSocketOrigin,
         ws: true,
         xfwd: true,
       },

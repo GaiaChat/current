@@ -57,8 +57,11 @@ import {
   type VoiceRemoteStream,
 } from '../hooks/useVoiceClient';
 import {
+  useVoiceCameraShareClient,
   useVoiceScreenShareClient,
+  type LocalCameraShare,
   type LocalScreenShare,
+  type RemoteCameraShare,
   type RemoteScreenShare,
 } from '../hooks/useVoiceScreenShareClient';
 import { ServerSettingsModal } from './server-settings-modal';
@@ -95,7 +98,6 @@ const MICROPHONE_MUTED_ICON_URL = new URL(
   import.meta.url,
 ).href;
 const DEFAULT_SERVER_PORT = 6414;
-const DEV_FRONTEND_PORTS = new Set(['4173', '5173']);
 
 type AuthMode = 'atproto' | 'lan';
 type RegistrationMode = 'invite_only' | 'open_signup' | 'manual_approval';
@@ -128,6 +130,13 @@ type CurrentDesktopVisualEffectsSettings = {
   fastGraphicsMode: boolean;
 };
 
+type CurrentDesktopVideoSettings = {
+  cameraDeviceId: string;
+  cameraResolution: '480p' | '720p' | '1080p';
+  cameraFrameRate: number;
+  mirrorPreview: boolean;
+};
+
 type CurrentDesktopRuntime = {
   host?: string;
   platform?: string;
@@ -137,6 +146,8 @@ type CurrentDesktopRuntime = {
   ) => () => void;
   getSoundSettings?: () => Promise<CurrentDesktopSoundSettings>;
   onSoundSettingsChange?: (callback: (payload: CurrentDesktopSoundSettings) => void) => () => void;
+  getVideoSettings?: () => Promise<CurrentDesktopVideoSettings>;
+  onVideoSettingsChange?: (callback: (payload: CurrentDesktopVideoSettings) => void) => () => void;
   getVisualEffectsSettings?: () => Promise<CurrentDesktopVisualEffectsSettings>;
   onVisualEffectsSettingsChange?: (
     callback: (payload: CurrentDesktopVisualEffectsSettings) => void,
@@ -171,6 +182,12 @@ const DEFAULT_DESKTOP_SOUND_SETTINGS: CurrentDesktopSoundSettings = {
 const DEFAULT_DESKTOP_VISUAL_EFFECTS: CurrentDesktopVisualEffectsSettings = {
   animatedCurrentBackgrounds: true,
   fastGraphicsMode: false,
+};
+const DEFAULT_DESKTOP_VIDEO_SETTINGS: CurrentDesktopVideoSettings = {
+  cameraDeviceId: 'default',
+  cameraResolution: '720p',
+  cameraFrameRate: 30,
+  mirrorPreview: true,
 };
 const staticBackgroundFrameCache = new Map<string, string>();
 const pendingStaticBackgroundFrames = new Map<string, Promise<string | null>>();
@@ -1154,6 +1171,8 @@ function isGaiaLauncherRuntime(): boolean {
     runtime?.onAppearanceModeChange ||
     runtime?.getSoundSettings ||
     runtime?.onSoundSettingsChange ||
+    runtime?.getVideoSettings ||
+    runtime?.onVideoSettingsChange ||
     runtime?.getVisualEffectsSettings ||
     runtime?.onVisualEffectsSettingsChange,
   );
@@ -1305,6 +1324,34 @@ function normalizeDesktopVisualEffects(
   };
 }
 
+function normalizeDesktopVideoSettings(
+  payload?: Partial<CurrentDesktopVideoSettings> | null,
+): CurrentDesktopVideoSettings {
+  const cameraResolution =
+    payload?.cameraResolution === '480p' ||
+    payload?.cameraResolution === '720p' ||
+    payload?.cameraResolution === '1080p'
+      ? payload.cameraResolution
+      : DEFAULT_DESKTOP_VIDEO_SETTINGS.cameraResolution;
+  const cameraFrameRate =
+    typeof payload?.cameraFrameRate === 'number' && Number.isFinite(payload.cameraFrameRate)
+      ? Math.min(60, Math.max(1, Math.round(payload.cameraFrameRate)))
+      : DEFAULT_DESKTOP_VIDEO_SETTINGS.cameraFrameRate;
+
+  return {
+    cameraDeviceId:
+      typeof payload?.cameraDeviceId === 'string' && payload.cameraDeviceId.trim()
+        ? payload.cameraDeviceId
+        : DEFAULT_DESKTOP_VIDEO_SETTINGS.cameraDeviceId,
+    cameraResolution,
+    cameraFrameRate,
+    mirrorPreview:
+      typeof payload?.mirrorPreview === 'boolean'
+        ? payload.mirrorPreview
+        : DEFAULT_DESKTOP_VIDEO_SETTINGS.mirrorPreview,
+  };
+}
+
 function isAnimatedBackgroundAppearance(
   background: ServerAppearance['background'] | undefined,
 ): boolean {
@@ -1349,7 +1396,10 @@ function freezeBackgroundFrame(sourceUrl: string): Promise<string | null> {
           return;
         }
 
-        const scale = Math.min(1, STATIC_BACKGROUND_FRAME_MAX_EDGE / Math.max(naturalWidth, naturalHeight));
+        const scale = Math.min(
+          1,
+          STATIC_BACKGROUND_FRAME_MAX_EDGE / Math.max(naturalWidth, naturalHeight),
+        );
         const width = Math.max(1, Math.round(naturalWidth * scale));
         const height = Math.max(1, Math.round(naturalHeight * scale));
         const canvas = document.createElement('canvas');
@@ -1970,15 +2020,6 @@ function slugifyServerName(value: string): string {
   return normalized || 'current-server';
 }
 
-function isValidUrl(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 function parseSetupList(value: string): string[] {
   return value
     .split(/[\n,]/)
@@ -2443,9 +2484,11 @@ function RemoteVoiceAudio({
 function ScreenShareVideo({
   stream,
   muted = true,
+  mirrored = false,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
+  mirrored?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -2455,7 +2498,7 @@ function ScreenShareVideo({
     }
   }, [stream]);
 
-  return <video ref={videoRef} autoPlay playsInline muted={muted} />;
+  return <video ref={videoRef} autoPlay playsInline muted={muted} className={mirrored ? 'mirrored' : undefined} />;
 }
 
 function VoiceMicMeter({
@@ -2646,11 +2689,12 @@ export function App() {
     DEFAULT_DESKTOP_SOUND_SETTINGS,
   );
   const [desktopSoundSettingsControlled, setDesktopSoundSettingsControlled] = useState(false);
+  const [desktopVideoSettings, setDesktopVideoSettings] = useState<CurrentDesktopVideoSettings>(
+    DEFAULT_DESKTOP_VIDEO_SETTINGS,
+  );
   const [desktopVisualEffects, setDesktopVisualEffects] =
     useState<CurrentDesktopVisualEffectsSettings>(DEFAULT_DESKTOP_VISUAL_EFFECTS);
-  const [staticBackgroundFrames, setStaticBackgroundFrames] = useState<Record<string, string>>(
-    {},
-  );
+  const [staticBackgroundFrames, setStaticBackgroundFrames] = useState<Record<string, string>>({});
   const [appearanceTransition, setAppearanceTransition] = useState<{
     id: number;
     from: ResolvedAppearanceMode;
@@ -3169,6 +3213,44 @@ export function App() {
 
     if (!hasSoundRuntime) {
       setDesktopSoundSettings(DEFAULT_DESKTOP_SOUND_SETTINGS);
+    }
+
+    return () => {
+      cancelled = true;
+      disposeGaiaListener?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const runtime = currentDesktopRuntime();
+    let disposeGaiaListener: (() => void) | undefined;
+
+    if (runtime?.getVideoSettings) {
+      void runtime
+        .getVideoSettings()
+        .then((payload) => {
+          if (!cancelled) {
+            setDesktopVideoSettings(normalizeDesktopVideoSettings(payload));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setDesktopVideoSettings(DEFAULT_DESKTOP_VIDEO_SETTINGS);
+          }
+        });
+    }
+
+    if (runtime?.onVideoSettingsChange) {
+      disposeGaiaListener = runtime.onVideoSettingsChange((payload) => {
+        if (!cancelled) {
+          setDesktopVideoSettings(normalizeDesktopVideoSettings(payload));
+        }
+      });
+    }
+
+    if (!runtime?.getVideoSettings && !runtime?.onVideoSettingsChange) {
+      setDesktopVideoSettings(DEFAULT_DESKTOP_VIDEO_SETTINGS);
     }
 
     return () => {
@@ -4466,6 +4548,11 @@ export function App() {
     currentUserId: sessionQuery.data?.user?.id,
     voiceSession: voiceClient.session,
   });
+  const cameraShareClient = useVoiceCameraShareClient({
+    currentUserId: sessionQuery.data?.user?.id,
+    voiceSession: voiceClient.session,
+    videoSettings: desktopVideoSettings,
+  });
   const voiceNetworkDiagnosticsLabel = useMemo(
     () => formatVoiceNetworkDiagnostics(voiceClient.diagnostics),
     [voiceClient.diagnostics],
@@ -4477,6 +4564,7 @@ export function App() {
       (event) => {
         voiceClient.handleGatewayEvent(event);
         screenShareClient.handleGatewayEvent(event);
+        cameraShareClient.handleGatewayEvent(event);
 
         if (event.type === 'GATEWAY_CLOSE') {
           const payload = event.payload as { reason?: unknown };
@@ -4906,6 +4994,7 @@ export function App() {
         updatePresenceCache,
         voiceClient.handleGatewayEvent,
         screenShareClient.handleGatewayEvent,
+        cameraShareClient.handleGatewayEvent,
       ],
     ),
   );
@@ -6935,14 +7024,12 @@ export function App() {
   const selectedVoiceScreenShares = useMemo(() => {
     if (currentChannel?.type !== 'voice') {
       return [] as Array<
-        | { kind: 'local'; share: LocalScreenShare }
-        | { kind: 'remote'; share: RemoteScreenShare }
+        { kind: 'local'; share: LocalScreenShare } | { kind: 'remote'; share: RemoteScreenShare }
       >;
     }
 
     const shares: Array<
-      | { kind: 'local'; share: LocalScreenShare }
-      | { kind: 'remote'; share: RemoteScreenShare }
+      { kind: 'local'; share: LocalScreenShare } | { kind: 'remote'; share: RemoteScreenShare }
     > = [];
     if (screenShareClient.localShare?.share.channelId === currentChannel.id) {
       shares.push({ kind: 'local', share: screenShareClient.localShare });
@@ -6959,16 +7046,50 @@ export function App() {
     screenShareClient.localShare,
     screenShareClient.remoteShares,
   ]);
-  const selectedVoiceScreenShareCount = selectedVoiceScreenShares.length;
+  const selectedVoiceCameraShares = useMemo(() => {
+    if (currentChannel?.type !== 'voice') {
+      return [] as Array<
+        { kind: 'local'; share: LocalCameraShare } | { kind: 'remote'; share: RemoteCameraShare }
+      >;
+    }
+
+    const shares: Array<
+      { kind: 'local'; share: LocalCameraShare } | { kind: 'remote'; share: RemoteCameraShare }
+    > = [];
+    if (cameraShareClient.localShare?.share.channelId === currentChannel.id) {
+      shares.push({ kind: 'local', share: cameraShareClient.localShare });
+    }
+    for (const share of cameraShareClient.remoteShares) {
+      if (share.share.channelId === currentChannel.id) {
+        shares.push({ kind: 'remote', share });
+      }
+    }
+    return shares.sort((a, b) => a.share.share.startedAt.localeCompare(b.share.share.startedAt));
+  }, [
+    cameraShareClient.localShare,
+    cameraShareClient.remoteShares,
+    currentChannel?.id,
+    currentChannel?.type,
+  ]);
+  const selectedVoiceShareCount = selectedVoiceScreenShares.length + selectedVoiceCameraShares.length;
   const isSharingCurrentVoiceChannel = Boolean(
     currentChannel?.type === 'voice' &&
     screenShareClient.localShare?.share.channelId === currentChannel.id,
+  );
+  const isCameraSharingCurrentVoiceChannel = Boolean(
+    currentChannel?.type === 'voice' &&
+    cameraShareClient.localShare?.share.channelId === currentChannel.id,
   );
   const screenShareToggleDisabled =
     !voiceClient.session?.screenShare.enabled ||
     screenShareClient.status === 'requesting_screen' ||
     screenShareClient.status === 'starting';
   const screenShareToggleLabel = screenShareClient.localShare ? 'Stop Share' : 'Share Screen';
+  const cameraShareToggleDisabled =
+    !voiceClient.session?.camera.enabled ||
+    cameraShareClient.status === 'requesting_camera' ||
+    cameraShareClient.status === 'starting';
+  const cameraShareToggleLabel = cameraShareClient.localShare ? 'Stop Camera' : 'Camera';
 
   const handleToggleScreenShare = useCallback(() => {
     if (screenShareClient.localShare) {
@@ -6976,11 +7097,15 @@ export function App() {
       return;
     }
     void screenShareClient.startSharing().catch(() => undefined);
-  }, [
-    screenShareClient.localShare,
-    screenShareClient.startSharing,
-    screenShareClient.stopSharing,
-  ]);
+  }, [screenShareClient.localShare, screenShareClient.startSharing, screenShareClient.stopSharing]);
+
+  const handleToggleCameraShare = useCallback(() => {
+    if (cameraShareClient.localShare) {
+      void cameraShareClient.stopSharing();
+      return;
+    }
+    void cameraShareClient.startSharing().catch(() => undefined);
+  }, [cameraShareClient.localShare, cameraShareClient.startSharing, cameraShareClient.stopSharing]);
 
   const handleSelectChannel = useCallback(
     (channel: Channel) => {
@@ -8447,6 +8572,19 @@ export function App() {
                 >
                   {screenShareToggleLabel}
                 </button>
+                <button
+                  className={`voice-share-button ${cameraShareClient.localShare ? 'active' : ''}`}
+                  type="button"
+                  onClick={handleToggleCameraShare}
+                  disabled={cameraShareToggleDisabled}
+                  title={
+                    voiceClient.session?.camera.enabled === false
+                      ? 'Camera sharing is disabled on this server'
+                      : undefined
+                  }
+                >
+                  {cameraShareToggleLabel}
+                </button>
               </div>
 
               <VoiceMicMeter level={voiceClient.inputLevel} disabled={selfVoiceInputDisabled} />
@@ -8483,6 +8621,12 @@ export function App() {
               {screenShareClient.error && (
                 <div className={`voice-status voice-status-${screenShareClient.status}`}>
                   {screenShareClient.error}
+                </div>
+              )}
+
+              {cameraShareClient.error && (
+                <div className={`voice-status voice-status-${cameraShareClient.status}`}>
+                  {cameraShareClient.error}
                 </div>
               )}
 
@@ -8610,6 +8754,19 @@ export function App() {
                     {isSharingCurrentVoiceChannel ? 'Stop Share' : 'Share Screen'}
                   </button>
                   <button
+                    className={isCameraSharingCurrentVoiceChannel ? 'active' : ''}
+                    type="button"
+                    onClick={handleToggleCameraShare}
+                    disabled={cameraShareToggleDisabled}
+                    title={
+                      voiceClient.session?.camera.enabled === false
+                        ? 'Camera sharing is disabled on this server'
+                        : undefined
+                    }
+                  >
+                    {isCameraSharingCurrentVoiceChannel ? 'Stop Camera' : 'Camera'}
+                  </button>
+                  <button
                     type="button"
                     onClick={() => leaveVoiceMutation.mutate()}
                     disabled={leaveVoiceMutation.isPending}
@@ -8656,10 +8813,8 @@ export function App() {
                       <span>{selectedVoiceParticipants.length} connected</span>
                       <span>{selectedVoiceSpeakerCount} speaking</span>
                       {selectedVoiceMutedCount > 0 && <span>{selectedVoiceMutedCount} muted</span>}
-                      {selectedVoiceScreenShareCount > 0 && (
-                        <span>
-                          {selectedVoiceScreenShareCount} sharing
-                        </span>
+                      {selectedVoiceShareCount > 0 && (
+                        <span>{selectedVoiceShareCount} sharing</span>
                       )}
                     </div>
                   </div>
@@ -8692,6 +8847,19 @@ export function App() {
                         {isSharingCurrentVoiceChannel ? 'Stop Share' : 'Share Screen'}
                       </button>
                       <button
+                        className={`voice-room-action ${isCameraSharingCurrentVoiceChannel ? 'active' : ''}`}
+                        type="button"
+                        onClick={handleToggleCameraShare}
+                        disabled={cameraShareToggleDisabled}
+                        title={
+                          voiceClient.session?.camera.enabled === false
+                            ? 'Camera sharing is disabled on this server'
+                            : undefined
+                        }
+                      >
+                        {isCameraSharingCurrentVoiceChannel ? 'Stop Camera' : 'Camera'}
+                      </button>
+                      <button
                         className="voice-room-action disconnect"
                         type="button"
                         onClick={() => leaveVoiceMutation.mutate()}
@@ -8717,33 +8885,64 @@ export function App() {
                 </div>
               </header>
 
-              {selectedVoiceScreenShares.length > 0 && (
-                <div className="voice-screen-share-stage" aria-label="Screen shares">
+              {selectedVoiceShareCount > 0 && (
+                <div className="voice-screen-share-stage" aria-label="Voice media shares">
                   {selectedVoiceScreenShares.map((entry) => {
                     const share = entry.share.share;
                     const participant = membersById.get(share.userId);
                     const participantName =
                       share.userId === currentUser.id
                         ? 'You'
-                        : participant?.displayName ?? share.userId;
+                        : (participant?.displayName ?? share.userId);
                     const stream = entry.share.stream;
                     return (
                       <article
                         key={share.id}
-                        className={`voice-screen-share-card ${stream ? 'live' : 'connecting'}`}
+                        className={`voice-screen-share-card screen ${stream ? 'live' : 'connecting'}`}
                       >
                         <div className="voice-screen-share-video">
                           <ScreenShareVideo stream={stream} />
                           {!stream && (
-                            <span className="voice-screen-share-placeholder">
-                              Connecting
-                            </span>
+                            <span className="voice-screen-share-placeholder">Connecting</span>
                           )}
                         </div>
                         <footer>
                           <strong>{participantName}</strong>
                           <small>
-                            {share.constraints.maxWidth}x{share.constraints.maxHeight} · {share.constraints.maxFrameRate} FPS
+                            Screen · {share.constraints.maxWidth}x{share.constraints.maxHeight} ·{' '}
+                            {share.constraints.maxFrameRate} FPS
+                          </small>
+                        </footer>
+                      </article>
+                    );
+                  })}
+                  {selectedVoiceCameraShares.map((entry) => {
+                    const share = entry.share.share;
+                    const participant = membersById.get(share.userId);
+                    const participantName =
+                      share.userId === currentUser.id
+                        ? 'You'
+                        : (participant?.displayName ?? share.userId);
+                    const stream = entry.share.stream;
+                    return (
+                      <article
+                        key={share.id}
+                        className={`voice-screen-share-card camera ${stream ? 'live' : 'connecting'}`}
+                      >
+                        <div className="voice-screen-share-video">
+                          <ScreenShareVideo
+                            stream={stream}
+                            mirrored={entry.kind === 'local' && desktopVideoSettings.mirrorPreview}
+                          />
+                          {!stream && (
+                            <span className="voice-screen-share-placeholder">Connecting</span>
+                          )}
+                        </div>
+                        <footer>
+                          <strong>{participantName}</strong>
+                          <small>
+                            Camera · {share.constraints.maxWidth}x{share.constraints.maxHeight} ·{' '}
+                            {share.constraints.maxFrameRate} FPS
                           </small>
                         </footer>
                       </article>
@@ -10111,7 +10310,6 @@ function SetupWizard({
   const [serverName, setServerName] = useState('Current Community');
   const [slug, setSlug] = useState('current-community');
   const [slugTouched, setSlugTouched] = useState(false);
-  const [publicUrl, setPublicUrl] = useState(() => inferDefaultServerPublicUrl(serverPort));
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>('invite_only');
   const [initialPresenceStatus, setInitialPresenceStatus] = useState<UserPresenceStatus>('online');
   const [defaultSlowmodeSeconds, setDefaultSlowmodeSeconds] = useState(0);
@@ -10128,8 +10326,7 @@ function SetupWizard({
   const isFinalStep = step === setupSteps.length - 1;
   const normalizedSlug = slugifyServerName(slug);
   const allowedMimePrefixes = parseSetupList(allowedMimePrefixesText);
-  const basicsValid =
-    serverName.trim().length >= 2 && normalizedSlug.length >= 2 && isValidUrl(publicUrl.trim());
+  const basicsValid = serverName.trim().length >= 2 && normalizedSlug.length >= 2;
   const preferencesValid =
     Number.isFinite(defaultSlowmodeSeconds) &&
     defaultSlowmodeSeconds >= 0 &&
@@ -10138,8 +10335,7 @@ function SetupWizard({
   const mediaValid =
     Number.isFinite(uploadLimitMb) && uploadLimitMb > 0 && allowedMimePrefixes.length > 0;
   const canContinue = step === 0 ? basicsValid : step === 1 ? preferencesValid : mediaValid;
-  const portToForward =
-    normalizeSetupPort(serverPort) ?? inferCurrentBrowserPort() ?? DEFAULT_SERVER_PORT;
+  const portToForward = normalizeSetupPort(serverPort) ?? DEFAULT_SERVER_PORT;
 
   useEffect(() => {
     if (!slugTouched) {
@@ -10152,7 +10348,6 @@ function SetupWizard({
       apiPost<SetupBootstrapResponse>('/api/v1/setup/bootstrap', {
         serverName: serverName.trim(),
         slug: normalizedSlug,
-        publicUrl: publicUrl.trim().replace(/\/$/, ''),
         registrationMode,
         initialPresenceStatus,
         moderation: {
@@ -10242,10 +10437,6 @@ function SetupWizard({
                     setSlug(event.target.value);
                   }}
                 />
-              </label>
-              <label className="wide">
-                Public URL
-                <input value={publicUrl} onChange={(event) => setPublicUrl(event.target.value)} />
               </label>
               <p className="setup-note setup-port-note">
                 <strong>Port to forward:</strong> TCP {portToForward}. Forward this router or
@@ -10420,39 +10611,6 @@ function SetupWizard({
 function normalizeSetupPort(value: unknown): number | null {
   const port = Number(value);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
-}
-
-function inferCurrentBrowserPort(): number | null {
-  const explicitPort = normalizeSetupPort(window.location.port);
-  if (explicitPort) {
-    return explicitPort;
-  }
-  if (window.location.protocol === 'https:') {
-    return 443;
-  }
-  if (window.location.protocol === 'http:') {
-    return 80;
-  }
-  return null;
-}
-
-function isLoopbackSetupHost(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
-}
-
-function inferDefaultServerPublicUrl(serverPort?: number): string {
-  const base = new URL(window.location.href);
-  const browserPort = window.location.port;
-  if (base.protocol !== 'http:' && base.protocol !== 'https:') {
-    base.protocol = 'http:';
-  }
-  if (DEV_FRONTEND_PORTS.has(browserPort) && isLoopbackSetupHost(window.location.hostname)) {
-    base.port = String(normalizeSetupPort(serverPort) ?? DEFAULT_SERVER_PORT);
-  }
-  base.pathname = '';
-  base.search = '';
-  base.hash = '';
-  return base.toString().replace(/\/$/, '');
 }
 
 function ServerRemovalScreen({ notice }: { notice: ServerRemovalNotice }) {

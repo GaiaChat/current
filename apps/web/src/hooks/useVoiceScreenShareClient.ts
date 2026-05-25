@@ -1,44 +1,80 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  VoiceCameraShare,
+  VoiceCameraShareSettings,
+  VoiceMediaShare,
+  VoiceMediaShareSettings,
+  VoiceMediaShareSignal,
   VoiceScreenShare,
   VoiceScreenShareSettings,
-  VoiceScreenShareSignal,
 } from '@current/types';
 import { apiPost } from '../lib/api';
 import type { GatewayEnvelope } from './useGateway';
 import type { VoiceSessionInfo } from './useVoiceClient';
 
-type ScreenShareStatus =
+type VoiceMediaShareStatus =
   | 'idle'
   | 'requesting_screen'
+  | 'requesting_camera'
   | 'starting'
   | 'sharing'
   | 'permission_denied'
   | 'unsupported'
   | 'failed';
 
-interface ScreenShareStartResponse {
-  share: VoiceScreenShare;
+interface VoiceMediaShareStartResponse<TShare extends VoiceMediaShare, TSettings extends VoiceMediaShareSettings> {
+  share: TShare;
   viewers: string[];
-  settings: VoiceScreenShareSettings;
+  settings: TSettings;
 }
 
-interface RemoteScreenShareEntry {
-  share: VoiceScreenShare;
+interface RemoteVoiceMediaShareEntry<TShare extends VoiceMediaShare> {
+  share: TShare;
   stream: MediaStream | null;
 }
 
-export interface RemoteScreenShare {
-  share: VoiceScreenShare;
+export interface RemoteVoiceMediaShare<TShare extends VoiceMediaShare = VoiceMediaShare> {
+  share: TShare;
   stream: MediaStream | null;
 }
 
-export interface LocalScreenShare {
-  share: VoiceScreenShare;
+export interface LocalVoiceMediaShare<TShare extends VoiceMediaShare = VoiceMediaShare> {
+  share: TShare;
   stream: MediaStream;
 }
 
-function isScreenSharePermissionDenied(error: unknown): boolean {
+export type ScreenShareStatus = VoiceMediaShareStatus;
+export type RemoteScreenShare = RemoteVoiceMediaShare<VoiceScreenShare>;
+export type LocalScreenShare = LocalVoiceMediaShare<VoiceScreenShare>;
+export type RemoteCameraShare = RemoteVoiceMediaShare<VoiceCameraShare>;
+export type LocalCameraShare = LocalVoiceMediaShare<VoiceCameraShare>;
+
+export interface VoiceCameraCaptureSettings {
+  cameraDeviceId: string;
+  cameraResolution: '480p' | '720p' | '1080p';
+  cameraFrameRate: number;
+}
+
+interface VoiceMediaShareClientSpec<TShare extends VoiceMediaShare, TSettings extends VoiceMediaShareSettings> {
+  requestStatus: Extract<VoiceMediaShareStatus, 'requesting_screen' | 'requesting_camera'>;
+  disabledMessage: string;
+  noTrackMessage: string;
+  defaultErrorMessage: string;
+  viewerErrorMessage: string;
+  openErrorMessage: string;
+  startedEvent: string;
+  stoppedEvent: string;
+  signalEvent: string;
+  startedPayloadKey: 'screenShare' | 'cameraShare';
+  sessionSettings: (session: VoiceSessionInfo) => TSettings;
+  sessionShares: (session: VoiceSessionInfo) => TShare[];
+  shareBasePath: string;
+  channelSharePath: (channelId: string) => string;
+  createCaptureStream: (settings: TSettings) => Promise<MediaStream>;
+  applyCaptureSettings: (stream: MediaStream, settings: TSettings | TShare['constraints']) => Promise<void>;
+}
+
+function isMediaSharePermissionDenied(error: unknown): boolean {
   return error instanceof DOMException && (
     error.name === 'NotAllowedError' ||
     error.name === 'PermissionDeniedError' ||
@@ -58,6 +94,38 @@ function createDisplayMediaOptions(settings: VoiceScreenShareSettings): DisplayM
   };
 }
 
+function getCameraResolutionBounds(resolution: VoiceCameraCaptureSettings['cameraResolution']): { width: number; height: number } {
+  if (resolution === '1080p') {
+    return { width: 1920, height: 1080 };
+  }
+  if (resolution === '480p') {
+    return { width: 854, height: 480 };
+  }
+  return { width: 1280, height: 720 };
+}
+
+function createCameraConstraints(
+  serverSettings: VoiceCameraShareSettings,
+  captureSettings?: VoiceCameraCaptureSettings,
+  includeDevice = true,
+): MediaTrackConstraints {
+  const preferred = captureSettings
+    ? getCameraResolutionBounds(captureSettings.cameraResolution)
+    : { width: serverSettings.maxWidth, height: serverSettings.maxHeight };
+  const frameRate = captureSettings?.cameraFrameRate ?? serverSettings.maxFrameRate;
+  const constraints: MediaTrackConstraints = {
+    width: { ideal: Math.min(preferred.width, serverSettings.maxWidth), max: serverSettings.maxWidth },
+    height: { ideal: Math.min(preferred.height, serverSettings.maxHeight), max: serverSettings.maxHeight },
+    frameRate: { ideal: Math.min(frameRate, serverSettings.maxFrameRate), max: serverSettings.maxFrameRate },
+  };
+
+  if (includeDevice && captureSettings?.cameraDeviceId && captureSettings.cameraDeviceId !== 'default') {
+    constraints.deviceId = { exact: captureSettings.cameraDeviceId };
+  }
+
+  return constraints;
+}
+
 function getIceCandidateInit(candidate: RTCIceCandidate): RTCIceCandidateInit {
   return typeof candidate.toJSON === 'function'
     ? candidate.toJSON()
@@ -69,12 +137,13 @@ function getIceCandidateInit(candidate: RTCIceCandidate): RTCIceCandidateInit {
       };
 }
 
-async function applyCaptureSettings(
+async function applyVideoCaptureSettings(
   stream: MediaStream,
-  settings: VoiceScreenShareSettings | VoiceScreenShare['constraints'],
+  settings: VoiceMediaShareSettings | VoiceMediaShare['constraints'],
+  contentHint: string,
 ): Promise<void> {
   await Promise.all(stream.getVideoTracks().map(async (track) => {
-    track.contentHint = 'detail';
+    track.contentHint = contentHint;
     await track.applyConstraints({
       width: { max: settings.maxWidth },
       height: { max: settings.maxHeight },
@@ -93,24 +162,26 @@ async function applySenderBitrate(sender: RTCRtpSender, maxBitrateKbps: number):
   await sender.setParameters(parameters).catch(() => undefined);
 }
 
-export function useVoiceScreenShareClient({
+function useVoiceMediaShareClient<TShare extends VoiceMediaShare, TSettings extends VoiceMediaShareSettings>({
   currentUserId,
   voiceSession,
+  spec,
 }: {
   currentUserId?: string;
   voiceSession: VoiceSessionInfo | null;
+  spec: VoiceMediaShareClientSpec<TShare, TSettings>;
 }) {
-  const [status, setStatus] = useState<ScreenShareStatus>('idle');
+  const [status, setStatus] = useState<VoiceMediaShareStatus>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [localShare, setLocalShare] = useState<LocalScreenShare | null>(null);
-  const [remoteShares, setRemoteShares] = useState<RemoteScreenShare[]>([]);
+  const [localShare, setLocalShare] = useState<LocalVoiceMediaShare<TShare> | null>(null);
+  const [remoteShares, setRemoteShares] = useState<RemoteVoiceMediaShare<TShare>[]>([]);
 
   const sessionRef = useRef<VoiceSessionInfo | null>(voiceSession);
   const currentUserIdRef = useRef<string | undefined>(currentUserId);
-  const localShareRef = useRef<LocalScreenShare | null>(null);
+  const localShareRef = useRef<LocalVoiceMediaShare<TShare> | null>(null);
   const senderPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const viewerPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const remoteSharesRef = useRef<Map<string, RemoteScreenShareEntry>>(new Map());
+  const remoteSharesRef = useRef<Map<string, RemoteVoiceMediaShareEntry<TShare>>>(new Map());
   const watchedSharesRef = useRef<Set<string>>(new Set());
   const pendingCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
 
@@ -132,18 +203,18 @@ export function useVoiceScreenShareClient({
   const sendSignal = useCallback(async (
     shareId: string,
     targetUserId: string,
-    signal: VoiceScreenShareSignal,
+    signal: VoiceMediaShareSignal,
   ) => {
     const session = sessionRef.current;
     if (!session) {
       return;
     }
-    await apiPost<void>(`/api/v1/voice/screen-shares/${shareId}/signal`, {
+    await apiPost<void>(`${spec.shareBasePath}/${shareId}/signal`, {
       sessionId: session.sessionId,
       targetUserId,
       signal,
     });
-  }, []);
+  }, [spec.shareBasePath]);
 
   const flushPendingCandidates = useCallback(async (key: string, connection: RTCPeerConnection) => {
     if (!connection.remoteDescription) {
@@ -161,13 +232,7 @@ export function useVoiceScreenShareClient({
     connection: RTCPeerConnection | undefined,
     candidate: RTCIceCandidateInit,
   ) => {
-    if (!connection) {
-      const queued = pendingCandidatesRef.current.get(key) ?? [];
-      queued.push(candidate);
-      pendingCandidatesRef.current.set(key, queued);
-      return;
-    }
-    if (!connection.remoteDescription) {
+    if (!connection || !connection.remoteDescription) {
       const queued = pendingCandidatesRef.current.get(key) ?? [];
       queued.push(candidate);
       pendingCandidatesRef.current.set(key, queued);
@@ -221,11 +286,11 @@ export function useVoiceScreenShareClient({
     cleanupLocalShare(true);
     setError(null);
     if (session && current) {
-      await apiPost<void>(`/api/v1/voice/screen-shares/${current.share.id}/stop`, {
+      await apiPost<void>(`${spec.shareBasePath}/${current.share.id}/stop`, {
         sessionId: session.sessionId,
       }).catch(() => undefined);
     }
-  }, [cleanupLocalShare]);
+  }, [cleanupLocalShare, spec.shareBasePath]);
 
   const createPeerConnection = useCallback((
     shareId: string,
@@ -289,7 +354,7 @@ export function useVoiceScreenShareClient({
     }
   }, [createPeerConnection, sendSignal]);
 
-  const watchShare = useCallback((share: VoiceScreenShare) => {
+  const watchShare = useCallback((share: TShare) => {
     const session = sessionRef.current;
     if (!session || share.channelId !== session.channelId || share.userId === currentUserIdRef.current) {
       return;
@@ -347,15 +412,16 @@ export function useVoiceScreenShareClient({
       return;
     }
 
-    if (event.type === 'VOICE_SCREEN_SHARE_STARTED') {
-      const payload = event.payload as { screenShare?: VoiceScreenShare };
-      if (payload.screenShare) {
-        watchShare(payload.screenShare);
+    if (event.type === spec.startedEvent) {
+      const payload = event.payload as Partial<Record<typeof spec.startedPayloadKey, TShare>>;
+      const share = payload[spec.startedPayloadKey];
+      if (share) {
+        watchShare(share);
       }
       return;
     }
 
-    if (event.type === 'VOICE_SCREEN_SHARE_STOPPED') {
+    if (event.type === spec.stoppedEvent) {
       const payload = event.payload as { shareId?: string; userId?: string };
       if (!payload.shareId) {
         return;
@@ -387,7 +453,7 @@ export function useVoiceScreenShareClient({
       return;
     }
 
-    if (event.type !== 'VOICE_SCREEN_SHARE_SIGNAL') {
+    if (event.type !== spec.signalEvent) {
       return;
     }
 
@@ -396,7 +462,7 @@ export function useVoiceScreenShareClient({
       shareId?: string;
       fromUserId?: string;
       targetUserId?: string;
-      signal?: VoiceScreenShareSignal;
+      signal?: VoiceMediaShareSignal;
     };
     if (
       !payload.shareId ||
@@ -410,7 +476,7 @@ export function useVoiceScreenShareClient({
 
     if (payload.signal.type === 'viewer-ready') {
       void ensureSenderConnection(payload.fromUserId).catch((error) => {
-        setError(error instanceof Error ? error.message : 'Could not connect screen share viewer.');
+        setError(error instanceof Error ? error.message : spec.viewerErrorMessage);
       });
       return;
     }
@@ -422,7 +488,7 @@ export function useVoiceScreenShareClient({
 
     if (payload.signal.type === 'offer') {
       void handleOffer(payload.shareId, payload.fromUserId, payload.signal.description).catch((error) => {
-        setError(error instanceof Error ? error.message : 'Could not open screen share.');
+        setError(error instanceof Error ? error.message : spec.openErrorMessage);
       });
       return;
     }
@@ -453,41 +519,43 @@ export function useVoiceScreenShareClient({
     ensureSenderConnection,
     flushPendingCandidates,
     handleOffer,
+    spec.openErrorMessage,
+    spec.signalEvent,
+    spec.startedEvent,
+    spec.startedPayloadKey,
+    spec.stoppedEvent,
+    spec.viewerErrorMessage,
     watchShare,
   ]);
 
   const startSharing = useCallback(async () => {
     const session = sessionRef.current;
-    const settings = session?.screenShare;
+    const settings = session ? spec.sessionSettings(session) : null;
     if (!session || !currentUserIdRef.current) {
-      throw new Error('Join a voice channel before sharing your screen.');
+      throw new Error('Join a voice channel before sharing.');
     }
     if (!settings?.enabled) {
-      throw new Error('Screen sharing is disabled on this server.');
-    }
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      setStatus('unsupported');
-      throw new Error('Screen sharing is not supported in this browser.');
+      throw new Error(spec.disabledMessage);
     }
 
-    setStatus('requesting_screen');
+    setStatus(spec.requestStatus);
     setError(null);
     let stream: MediaStream | null = null;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia(createDisplayMediaOptions(settings));
-      await applyCaptureSettings(stream, settings);
+      stream = await spec.createCaptureStream(settings);
+      await spec.applyCaptureSettings(stream, settings);
       const [track] = stream.getVideoTracks();
       if (!track) {
-        throw new Error('No screen video track was returned.');
+        throw new Error(spec.noTrackMessage);
       }
 
       setStatus('starting');
-      const started = await apiPost<ScreenShareStartResponse>(
-        `/api/v1/voice/channels/${session.channelId}/screen-shares`,
+      const started = await apiPost<VoiceMediaShareStartResponse<TShare, TSettings>>(
+        spec.channelSharePath(session.channelId),
         { sessionId: session.sessionId },
       );
-      await applyCaptureSettings(stream, started.settings);
-      const share: LocalScreenShare = {
+      await spec.applyCaptureSettings(stream, started.settings);
+      const share: LocalVoiceMediaShare<TShare> = {
         share: started.share,
         stream,
       };
@@ -499,19 +567,19 @@ export function useVoiceScreenShareClient({
       }, { once: true });
       for (const viewerId of started.viewers) {
         void ensureSenderConnection(viewerId).catch((error) => {
-          setError(error instanceof Error ? error.message : 'Could not connect screen share viewer.');
+          setError(error instanceof Error ? error.message : spec.viewerErrorMessage);
         });
       }
     } catch (error) {
       for (const track of stream?.getTracks() ?? []) {
         track.stop();
       }
-      const message = error instanceof Error ? error.message : 'Screen share failed.';
+      const message = error instanceof Error ? error.message : spec.defaultErrorMessage;
       setError(message);
-      setStatus(isScreenSharePermissionDenied(error) ? 'permission_denied' : 'failed');
+      setStatus(isMediaSharePermissionDenied(error) ? 'permission_denied' : 'failed');
       throw error;
     }
-  }, [ensureSenderConnection, stopSharing]);
+  }, [ensureSenderConnection, spec, stopSharing]);
 
   useEffect(() => {
     if (!voiceSession) {
@@ -521,10 +589,10 @@ export function useVoiceScreenShareClient({
       }
       return;
     }
-    for (const share of voiceSession.screenShares ?? []) {
+    for (const share of spec.sessionShares(voiceSession) ?? []) {
       watchShare(share);
     }
-  }, [cleanupLocalShare, closeRemoteShare, voiceSession, watchShare]);
+  }, [cleanupLocalShare, closeRemoteShare, spec, voiceSession, watchShare]);
 
   useEffect(() => () => {
     cleanupLocalShare(true);
@@ -542,4 +610,91 @@ export function useVoiceScreenShareClient({
     stopSharing,
     handleGatewayEvent,
   };
+}
+
+export function useVoiceScreenShareClient({
+  currentUserId,
+  voiceSession,
+}: {
+  currentUserId?: string;
+  voiceSession: VoiceSessionInfo | null;
+}) {
+  const spec = useMemo<VoiceMediaShareClientSpec<VoiceScreenShare, VoiceScreenShareSettings>>(() => ({
+    requestStatus: 'requesting_screen',
+    disabledMessage: 'Screen sharing is disabled on this server.',
+    noTrackMessage: 'No screen video track was returned.',
+    defaultErrorMessage: 'Screen share failed.',
+    viewerErrorMessage: 'Could not connect screen share viewer.',
+    openErrorMessage: 'Could not open screen share.',
+    startedEvent: 'VOICE_SCREEN_SHARE_STARTED',
+    stoppedEvent: 'VOICE_SCREEN_SHARE_STOPPED',
+    signalEvent: 'VOICE_SCREEN_SHARE_SIGNAL',
+    startedPayloadKey: 'screenShare',
+    sessionSettings: (session) => session.screenShare,
+    sessionShares: (session) => session.screenShares,
+    shareBasePath: '/api/v1/voice/screen-shares',
+    channelSharePath: (channelId) => `/api/v1/voice/channels/${channelId}/screen-shares`,
+    createCaptureStream: async (settings) => {
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        throw new Error('Screen sharing is not supported in this browser.');
+      }
+      return navigator.mediaDevices.getDisplayMedia(createDisplayMediaOptions(settings));
+    },
+    applyCaptureSettings: (stream, settings) => applyVideoCaptureSettings(stream, settings, 'detail'),
+  }), []);
+
+  return useVoiceMediaShareClient<VoiceScreenShare, VoiceScreenShareSettings>({
+    currentUserId,
+    voiceSession,
+    spec,
+  });
+}
+
+export function useVoiceCameraShareClient({
+  currentUserId,
+  voiceSession,
+  videoSettings,
+}: {
+  currentUserId?: string;
+  voiceSession: VoiceSessionInfo | null;
+  videoSettings?: VoiceCameraCaptureSettings;
+}) {
+  const spec = useMemo<VoiceMediaShareClientSpec<VoiceCameraShare, VoiceCameraShareSettings>>(() => ({
+    requestStatus: 'requesting_camera',
+    disabledMessage: 'Camera sharing is disabled on this server.',
+    noTrackMessage: 'No camera video track was returned.',
+    defaultErrorMessage: 'Camera share failed.',
+    viewerErrorMessage: 'Could not connect camera viewer.',
+    openErrorMessage: 'Could not open camera share.',
+    startedEvent: 'VOICE_CAMERA_SHARE_STARTED',
+    stoppedEvent: 'VOICE_CAMERA_SHARE_STOPPED',
+    signalEvent: 'VOICE_CAMERA_SHARE_SIGNAL',
+    startedPayloadKey: 'cameraShare',
+    sessionSettings: (session) => session.camera,
+    sessionShares: (session) => session.cameraShares,
+    shareBasePath: '/api/v1/voice/camera-shares',
+    channelSharePath: (channelId) => `/api/v1/voice/channels/${channelId}/camera-shares`,
+    createCaptureStream: async (settings) => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Camera sharing is not supported in this browser.');
+      }
+      const constraints = createCameraConstraints(settings, videoSettings, true);
+      return navigator.mediaDevices.getUserMedia({ video: constraints, audio: false }).catch((error) => {
+        if (videoSettings?.cameraDeviceId && videoSettings.cameraDeviceId !== 'default') {
+          return navigator.mediaDevices.getUserMedia({
+            video: createCameraConstraints(settings, videoSettings, false),
+            audio: false,
+          });
+        }
+        throw error;
+      });
+    },
+    applyCaptureSettings: (stream, settings) => applyVideoCaptureSettings(stream, settings, 'motion'),
+  }), [videoSettings]);
+
+  return useVoiceMediaShareClient<VoiceCameraShare, VoiceCameraShareSettings>({
+    currentUserId,
+    voiceSession,
+    spec,
+  });
 }

@@ -8,7 +8,8 @@ import type { ModerationService } from '../services/moderation-service.js';
 import type { InviteService } from '../services/invite-service.js';
 import type { MemberService } from '../services/member-service.js';
 import type { VoiceService } from '../voice/voice-service.js';
-import type { VoiceScreenShareService } from '../voice/voice-screen-share-service.js';
+import type { VoiceMediaShareService } from '../voice/voice-media-share-service.js';
+import type { VoiceCameraShare, VoiceScreenShare } from '@current/types';
 import type { GatewayService } from '../realtime/gateway-service.js';
 import type { ServerConfigService } from '../services/server-config-service.js';
 import type { RepositoryBag } from '../db/repositories/index.js';
@@ -28,7 +29,8 @@ export interface AppContext {
   members: MemberService;
   atprotoBlocks: AtprotoBlockService;
   voice: VoiceService;
-  screenShare: VoiceScreenShareService;
+  screenShare: VoiceMediaShareService<VoiceScreenShare>;
+  cameraShare: VoiceMediaShareService<VoiceCameraShare>;
   gateway: GatewayService;
   serverConfig: ServerConfigService;
 }

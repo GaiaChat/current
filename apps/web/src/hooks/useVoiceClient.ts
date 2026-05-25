@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Device } from 'mediasoup-client';
 import type { types as mediasoupClientTypes } from 'mediasoup-client';
-import type { VoiceProducer, VoiceScreenShare, VoiceScreenShareSettings, VoiceState } from '@current/types';
+import type {
+  VoiceCameraShare,
+  VoiceCameraShareSettings,
+  VoiceProducer,
+  VoiceScreenShare,
+  VoiceScreenShareSettings,
+  VoiceState,
+} from '@current/types';
 import { apiPost, apiPatch } from '../lib/api';
 import type { GatewayEnvelope } from './useGateway';
 
@@ -27,6 +34,8 @@ interface VoiceJoinResponse {
   producers: VoiceProducer[];
   screenShare: VoiceScreenShareSettings;
   screenShares: VoiceScreenShare[];
+  camera: VoiceCameraShareSettings;
+  cameraShares: VoiceCameraShare[];
 }
 
 interface VoiceTransportInfo {
@@ -96,6 +105,8 @@ interface VoiceSessionRef {
 export interface VoiceSessionInfo extends VoiceSessionRef {
   screenShare: VoiceScreenShareSettings;
   screenShares: VoiceScreenShare[];
+  camera: VoiceCameraShareSettings;
+  cameraShares: VoiceCameraShare[];
 }
 
 type MediasoupDevice = Device;
@@ -803,6 +814,8 @@ export function useVoiceClient({
         iceServers: joined.iceServers,
         screenShare: joined.screenShare,
         screenShares: joined.screenShares,
+        camera: joined.camera,
+        cameraShares: joined.cameraShares,
       });
 
       const device = new Device();
