@@ -156,7 +156,7 @@ Use a `127.0.0.1` callback URL for local testing.
 sudo ./scripts/install-current.sh
 ```
 
-This installs dependencies, builds server packages, writes `/etc/systemd/system/current.service`, and starts the service.
+This installs runtime dependencies with a symlink-safe layout, writes `/etc/systemd/system/current.service`, and starts the service.
 
 ## Server Release Updates
 
@@ -164,7 +164,7 @@ This installs dependencies, builds server packages, writes `/etc/systemd/system/
 pnpm release:server
 ```
 
-This writes `release-server/current-server-v<version>.tar.gz` and
+This writes a runtime-focused `release-server/current-server-v<version>.tar.gz` and
 `release-server/current-server-latest.json` for the
 `GaiaChat/current` GitHub Releases update channel.
 

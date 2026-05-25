@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const minimumNodeMajor = 20;
 const skipBuild = process.argv.includes('--skip-build');
+const releaseInfoPath = join(rootDir, 'release-info.json');
 const frozenLockfile =
   process.argv.includes('--frozen-lockfile') ||
   process.env.CI === 'true';
@@ -15,6 +16,11 @@ const buildTargets = [
   '@current/protocol',
   '@current/config',
   '@current/ui',
+];
+const symlinkSafePnpmArgs = [
+  '--config.node-linker=hoisted',
+  '--config.package-import-method=copy',
+  '--config.prefer-symlinked-executables=false',
 ];
 
 function commandName(name) {
@@ -87,6 +93,10 @@ function ensureNodeVersion() {
   }
 }
 
+function isReleaseBundle() {
+  return existsSync(releaseInfoPath);
+}
+
 function resolvePackageManager() {
   const pnpmVersion = readPnpmVersion();
   const npx = commandName('npx');
@@ -139,14 +149,28 @@ async function main() {
   ensureNodeVersion();
   const packageManager = resolvePackageManager();
   const pm = (args) => [packageManager.command, [...packageManager.prefixArgs, ...args]];
+  const releaseBundle = isReleaseBundle();
   console.log(`[Current install] Repo: ${rootDir}`);
   console.log(`[Current install] Package manager: ${packageManager.label}`);
 
-  const installArgs = ['install'];
+  const installArgs = releaseBundle
+    ? ['install', '--prod', ...symlinkSafePnpmArgs]
+    : ['install'];
   if (frozenLockfile && existsSync(join(rootDir, 'pnpm-lock.yaml'))) {
     installArgs.push('--frozen-lockfile');
   }
-  await run(...pm(installArgs), 'Installing dependencies');
+  await run(
+    ...pm(installArgs),
+    releaseBundle
+      ? 'Installing runtime dependencies with a symlink-safe layout'
+      : 'Installing dependencies',
+  );
+
+  if (releaseBundle) {
+    console.log('[Current install] Release bundle setup complete.');
+    console.log('[Current install] Run Current with the launcher for your OS.');
+    return;
+  }
 
   if (!skipBuild) {
     for (const target of buildTargets) {

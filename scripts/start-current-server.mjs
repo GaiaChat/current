@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const serverRoot = join(rootDir, 'apps', 'server');
 const webDistDir = join(rootDir, 'apps', 'web', 'dist');
+const releaseInfoPath = join(rootDir, 'release-info.json');
 const isWindows = process.platform === 'win32';
 const checkOnly = process.argv.includes('--check');
 const validModes = new Set(['normal', 'dev']);
@@ -27,6 +28,15 @@ const lanStorage = {
   sqlitePath: 'apps/server/data/lan/current.sqlite',
   uploadDir: 'apps/server/uploads/lan',
 };
+const symlinkSafePnpmArgs = [
+  '--config.node-linker=hoisted',
+  '--config.package-import-method=copy',
+  '--config.prefer-symlinked-executables=false',
+];
+
+function isReleaseBundle() {
+  return existsSync(releaseInfoPath);
+}
 
 function commandName(name) {
   return isWindows ? `${name}.cmd` : name;
@@ -120,13 +130,22 @@ async function filesMatch(leftPath, rightPath) {
   }
 }
 
-async function dependencyInstallReason() {
-  const requiredPaths = [
-    join(rootDir, 'node_modules', '.pnpm'),
-    join(rootDir, 'node_modules', '.bin', commandName('tsc')),
-    join(rootDir, 'apps', 'server', 'node_modules'),
-    join(rootDir, 'apps', 'web', 'node_modules'),
-  ];
+async function dependencyInstallReason(releaseBundle) {
+  const requiredPaths = releaseBundle
+    ? [
+        join(rootDir, 'node_modules', '.pnpm'),
+        join(rootDir, 'node_modules', '@current', 'config', 'package.json'),
+        join(rootDir, 'node_modules', '@current', 'protocol', 'package.json'),
+        join(rootDir, 'node_modules', '@current', 'types', 'package.json'),
+        join(rootDir, 'node_modules', 'fastify', 'package.json'),
+        join(rootDir, 'node_modules', 'mediasoup', 'package.json'),
+      ]
+    : [
+        join(rootDir, 'node_modules', '.pnpm'),
+        join(rootDir, 'node_modules', '.bin', commandName('tsc')),
+        join(rootDir, 'apps', 'server', 'node_modules'),
+        join(rootDir, 'apps', 'web', 'node_modules'),
+      ];
   const missingPath = requiredPaths.find((requiredPath) => !existsSync(requiredPath));
   if (missingPath) {
     return `missing ${displayPath(missingPath)}`;
@@ -146,9 +165,9 @@ async function dependencyInstallReason() {
   return null;
 }
 
-async function ensureDependencies(pm) {
+async function ensureDependencies(pm, releaseBundle) {
   console.log('[Current] Checking first-time setup...');
-  const reason = await dependencyInstallReason();
+  const reason = await dependencyInstallReason(releaseBundle);
   if (!reason) {
     console.log('[Current] Dependencies are already installed and current.');
     return;
@@ -159,7 +178,13 @@ async function ensureDependencies(pm) {
   }
 
   console.log(`[Current] Dependencies need setup (${reason}).`);
-  console.log('[Current] Installing dependencies before choosing a server mode...');
+  if (releaseBundle) {
+    console.log('[Current] Installing runtime dependencies with a symlink-safe layout...');
+    await run(...pm(['install', '--prod', ...symlinkSafePnpmArgs]), 'runtime dependency install');
+    return;
+  }
+
+  console.log('[Current] Installing dependencies before startup...');
   await run(...pm(['install']), 'dependency install');
 }
 
@@ -951,13 +976,21 @@ function parseModeArg() {
   return process.env.CURRENT_LAUNCH_MODE?.trim().toLowerCase();
 }
 
-async function chooseMode() {
+async function chooseMode(releaseBundle) {
   const requestedMode = parseModeArg();
   if (requestedMode) {
+    if (releaseBundle && requestedMode === 'dev') {
+      throw new Error('Dev mode is not available in packaged server releases. Use normal mode, or run dev mode from a source checkout.');
+    }
     if (validModes.has(requestedMode)) {
       return requestedMode;
     }
     throw new Error(`Unknown launch mode "${requestedMode}". Use normal or dev.`);
+  }
+
+  if (releaseBundle) {
+    console.log('[Current] Release bundle detected; using normal mode with prebuilt server assets.');
+    return 'normal';
   }
 
   if (checkOnly) {
@@ -1026,7 +1059,12 @@ function run(command, args, label, extraEnv = {}) {
   });
 }
 
-async function buildForNormalMode(pm) {
+async function buildForNormalMode(pm, releaseBundle) {
+  if (releaseBundle) {
+    console.log('[Current] Using prebuilt production server assets.');
+    return;
+  }
+
   console.log('[Current] Building production server assets...');
   await run(...pm(['--filter', '@current/types', 'build']), 'types build');
   await run(...pm(['--filter', '@current/protocol', 'build']), 'protocol build');
@@ -1051,14 +1089,15 @@ async function main() {
   }
 
   const pm = (args) => [packageManager.command, [...packageManager.prefixArgs, ...args]];
+  const releaseBundle = isReleaseBundle();
   console.log(`[Current] Repo: ${rootDir}`);
   console.log(`[Current] Package manager: ${packageManager.label}`);
-  await ensureDependencies(pm);
+  const mode = await chooseMode(releaseBundle);
+  await ensureDependencies(pm, releaseBundle);
 
   const instance = await chooseInstance();
   const portOverride = parsePortArg();
   const configPath = await ensureInstanceConfig(instance);
-  const mode = await chooseMode();
   const launchConfig = await readServerLaunchConfig(instance, portOverride);
 
   console.log(`[Current] Instance: ${instance}`);
@@ -1095,18 +1134,17 @@ async function main() {
     return;
   }
 
-  await buildForNormalMode(pm);
+  await buildForNormalMode(pm, releaseBundle);
   console.log('[Current] Starting normal server. Press Ctrl+C in this terminal to stop it.');
-  await run(
-    ...pm(['--filter', '@current/server', 'start']),
-    'Current normal server',
-    {
-      CURRENT_CONFIG_PATH: configPath,
-      CURRENT_SERVER_INSTANCE: instance,
-      ...(portOverride ? { CURRENT_PORT: String(portOverride) } : {}),
-      CURRENT_WEB_DIST_DIR: webDistDir,
-    },
-  );
+  const normalServer = releaseBundle
+    ? [process.execPath, ['apps/server/dist/index.js']]
+    : pm(['--filter', '@current/server', 'start']);
+  await run(...normalServer, 'Current normal server', {
+    CURRENT_CONFIG_PATH: configPath,
+    CURRENT_SERVER_INSTANCE: instance,
+    ...(portOverride ? { CURRENT_PORT: String(portOverride) } : {}),
+    CURRENT_WEB_DIST_DIR: webDistDir,
+  });
 }
 
 main().catch((error) => {

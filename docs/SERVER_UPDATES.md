@@ -24,7 +24,9 @@ https://github.com/GaiaChat/current/releases/latest/download/current-server-late
 
 The generated manifest gives update clients the version, archive URL, size, and
 SHA-256 digest. The archive intentionally excludes local config, SQLite data,
-uploads, backups, and `node_modules`.
+uploads, backups, and `node_modules`. Release archives are runtime packages, not
+workspace checkouts, so first-run dependency installs avoid pnpm workspace
+symlinks on mounted or Windows-backed filesystems.
 
 ## Server-Side Update Flow
 
@@ -51,8 +53,8 @@ The durable Linux layout should separate app code from user state:
 
 ```text
 /opt/current/
-  versions/current-server-v0.3.0/
-  current -> versions/current-server-v0.3.0
+  versions/current-server-v0.3.1/
+  current -> versions/current-server-v0.3.1
 /etc/current/current.config.json
 /var/lib/current/current.sqlite
 /var/lib/current/uploads/

@@ -1,6 +1,6 @@
 {
   "name": "current",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Current - local-first Discord-style chat and voice with atproto auth",
   "packageManager": "pnpm@11.3.0",

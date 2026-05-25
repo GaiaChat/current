@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to create or update, for example current-server-v0.3.0'
+        description: 'Release tag to create or update, for example current-server-v0.3.1'
         required: true
 
 permissions:

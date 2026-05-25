@@ -21,6 +21,11 @@ const defaultRepository = 'GaiaChat/current';
 const defaultManifestUrl = `https://github.com/${defaultRepository}/releases/latest/download/current-server-latest.json`;
 const fallbackPnpmVersion = process.env.CURRENT_PNPM_VERSION || '11.3.0';
 const scriptRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const symlinkSafePnpmArgs = [
+  '--config.node-linker=hoisted',
+  '--config.package-import-method=copy',
+  '--config.prefer-symlinked-executables=false',
+];
 
 function usage() {
   return [
@@ -307,11 +312,16 @@ function packageManager() {
 
 async function installProductionDependencies(versionDir) {
   const [command, prefixArgs] = packageManager();
-  const args = [...prefixArgs, 'install', '--prod', '--frozen-lockfile'];
+  const args = [...prefixArgs, 'install', '--prod', '--frozen-lockfile', ...symlinkSafePnpmArgs];
   try {
     await run(command, args, 'production dependency install', versionDir);
   } catch {
-    await run(command, [...prefixArgs, 'install', '--prod'], 'production dependency install', versionDir);
+    await run(
+      command,
+      [...prefixArgs, 'install', '--prod', ...symlinkSafePnpmArgs],
+      'production dependency install',
+      versionDir,
+    );
   }
 }
 

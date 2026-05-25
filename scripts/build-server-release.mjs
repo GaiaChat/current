@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,10 +26,10 @@ const manifestName = channel === 'stable'
 const manifestPath = join(releaseDir, manifestName);
 const skipBuild = process.argv.includes('--skip-build');
 
-function run(command, args, label) {
+function run(command, args, label, cwd = rootDir) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(command, args, {
-      cwd: rootDir,
+      cwd,
       env: {
         ...process.env,
         FORCE_COLOR: process.env.FORCE_COLOR ?? '1',
@@ -59,13 +59,53 @@ async function copyPath(relativePath) {
   });
 }
 
+const internalPackagePaths = new Map([
+  ['@current/config', 'packages/config'],
+  ['@current/protocol', 'packages/protocol'],
+  ['@current/types', 'packages/types'],
+  ['@current/ui', 'packages/ui'],
+]);
+
+function toPosixPath(path) {
+  return path.split('\\').join('/');
+}
+
+function releaseDependencySpec(packageDir, dependencyName) {
+  const dependencyPath = internalPackagePaths.get(dependencyName);
+  if (!dependencyPath) {
+    return null;
+  }
+  return `file:${toPosixPath(relative(packageDir, dependencyPath))}`;
+}
+
+function rewriteWorkspaceDependencies(packageDir, dependencies) {
+  if (!dependencies) {
+    return dependencies;
+  }
+
+  const nextDependencies = { ...dependencies };
+  for (const [name, spec] of Object.entries(nextDependencies)) {
+    if (typeof spec !== 'string' || !spec.startsWith('workspace:')) {
+      continue;
+    }
+    const releaseSpec = releaseDependencySpec(packageDir, name);
+    if (!releaseSpec) {
+      throw new Error(`No release dependency path is configured for ${name}.`);
+    }
+    nextDependencies[name] = releaseSpec;
+  }
+  return nextDependencies;
+}
+
 async function rewriteWorkspacePackageForProduction(relativePackageJsonPath) {
   const packageJsonPath = join(bundleDir, relativePackageJsonPath);
+  const packageDir = dirname(relativePackageJsonPath);
   const manifest = JSON.parse(await readFile(packageJsonPath, 'utf8'));
   const nextManifest = {
     ...manifest,
     main: './dist/index.js',
     types: './dist/index.d.ts',
+    dependencies: rewriteWorkspaceDependencies(packageDir, manifest.dependencies),
     exports: {
       '.': {
         types: './dist/index.d.ts',
@@ -76,6 +116,49 @@ async function rewriteWorkspacePackageForProduction(relativePackageJsonPath) {
   };
 
   await writeFile(packageJsonPath, `${JSON.stringify(nextManifest, null, 2)}\n`);
+}
+
+async function writeReleaseRootPackage() {
+  const serverPackageJson = JSON.parse(await readFile(join(rootDir, 'apps/server/package.json'), 'utf8'));
+  const dependencies = {};
+  for (const [name, spec] of Object.entries(serverPackageJson.dependencies ?? {})) {
+    dependencies[name] = typeof spec === 'string' && spec.startsWith('workspace:')
+      ? releaseDependencySpec('.', name)
+      : spec;
+    if (!dependencies[name]) {
+      throw new Error(`No release dependency path is configured for ${name}.`);
+    }
+  }
+
+  const releasePackageJson = {
+    name: 'current-server-release',
+    version,
+    private: true,
+    type: 'module',
+    description: packageJson.description,
+    packageManager: packageJson.packageManager,
+    scripts: {
+      start: 'node apps/server/dist/index.js',
+      'launch:server': 'node scripts/start-current-server.mjs',
+      'update:server': 'node scripts/update-current-server.mjs',
+      setup: 'node scripts/install-local-current.mjs',
+    },
+    dependencies,
+  };
+
+  await writeFile(join(bundleDir, 'package.json'), `${JSON.stringify(releasePackageJson, null, 2)}\n`);
+}
+
+async function writeReleaseWorkspaceConfig() {
+  await writeFile(
+    join(bundleDir, 'pnpm-workspace.yaml'),
+    [
+      'allowBuilds:',
+      '  core-js: false',
+      '  mediasoup: true',
+      '',
+    ].join('\n'),
+  );
 }
 
 async function writeRootScriptWrappers() {
@@ -144,8 +227,6 @@ async function stageBundle() {
 
   const paths = [
     'package.json',
-    'pnpm-lock.yaml',
-    'pnpm-workspace.yaml',
     'tsconfig.base.json',
     'turbo.json',
     'README.md',
@@ -199,6 +280,8 @@ async function stageBundle() {
   await rewriteWorkspacePackageForProduction('packages/protocol/package.json');
   await rewriteWorkspacePackageForProduction('packages/types/package.json');
   await rewriteWorkspacePackageForProduction('packages/ui/package.json');
+  await writeReleaseRootPackage();
+  await writeReleaseWorkspaceConfig();
   await writeRootScriptWrappers();
 
   await writeFile(
@@ -209,7 +292,22 @@ async function stageBundle() {
       version,
       channel,
       builtAt: new Date().toISOString(),
+      packageLayout: 'runtime',
     }, null, 2)}\n`,
+  );
+
+  await run(
+    'pnpm',
+    [
+      'install',
+      '--prod',
+      '--lockfile-only',
+      '--config.node-linker=hoisted',
+      '--config.package-import-method=copy',
+      '--config.prefer-symlinked-executables=false',
+    ],
+    'runtime lockfile',
+    bundleDir,
   );
 }
 

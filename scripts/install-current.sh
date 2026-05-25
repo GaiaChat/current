@@ -41,7 +41,7 @@ for (const file of ['release-info.json', 'package.json']) {
     // keep looking
   }
 }
-process.stdout.write('0.3.0');
+process.stdout.write('0.3.1');
 NODE
 )"
 VERSION_NAME="current-server-v$VERSION"
@@ -172,8 +172,15 @@ else
   exit 1
 fi
 
+SYMLINK_SAFE_PNPM_ARGS=(
+  --config.node-linker=hoisted
+  --config.package-import-method=copy
+  --config.prefer-symlinked-executables=false
+)
+
 if [[ -f "$CURRENT_WORKDIR/release-info.json" ]]; then
-  "${PM[@]}" install --prod --frozen-lockfile || "${PM[@]}" install --prod
+  "${PM[@]}" install --prod --frozen-lockfile "${SYMLINK_SAFE_PNPM_ARGS[@]}" || \
+    "${PM[@]}" install --prod "${SYMLINK_SAFE_PNPM_ARGS[@]}"
 else
   "${PM[@]}" install
   "${PM[@]}" --filter @current/types build
