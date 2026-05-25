@@ -1,6 +1,6 @@
 # Current
 
-Current is a local-first, Discord-style chat platform with browser + Electron clients, self-hosted community data, and Bluesky atproto OAuth identity.
+Current is a local-first, Discord-style chat platform with browser + Electron clients, self-hosted community data, and ATProto OAuth identity.
 
 ## Highlights
 
@@ -11,7 +11,7 @@ Current is a local-first, Discord-style chat platform with browser + Electron cl
 - Voice channel signaling and state (WebRTC SFU-ready config surface)
 - Strong moderation baseline: roles, automod rules, invite controls, moderation actions, audit logs
 - Setup wizard and admin studio UI
-- Linux-first native hosting with `systemd` installer script
+- Cross-platform local install/run launchers, plus Linux `systemd` hosting scripts
 
 ## Monorepo Structure
 
@@ -33,13 +33,53 @@ Current is a local-first, Discord-style chat platform with browser + Electron cl
 
 ## Quick Start
 
-For a one-click local server, use the launcher for your OS:
+Install Node.js 20 or newer first. The setup scripts run the pinned project package manager, `pnpm@11.3.0`, through `npx` or `corepack` when needed.
 
-- Windows: double-click `Current Server.cmd`
-- macOS: double-click `Current Server.command`
-- Linux: double-click `Current Server Linux.desktop`, or `Current Server Linux.sh` if your desktop environment prefers shell launchers
+### Windows
 
-The launcher checks first-time setup before any prompts, installs dependencies only when `node_modules` is missing or dependencies changed, starts the server in a terminal, and keeps the terminal attached so you can stop it with `Ctrl+C`.
+Double-click:
+
+1. `Install Current.cmd`
+2. `Current Server.cmd`
+
+Terminal equivalent:
+
+```cmd
+node scripts\install-local-current.mjs
+node scripts\start-current-server.mjs
+```
+
+### macOS
+
+Double-click:
+
+1. `Install Current.command`
+2. `Current Server.command`
+
+If macOS blocks the script the first time, right-click it and choose Open, or run:
+
+```bash
+chmod +x "Install Current.command" "Current Server.command"
+./Install\ Current.command
+./Current\ Server.command
+```
+
+### Linux
+
+Double-click:
+
+1. `Install Current Linux.sh`
+2. `Current Server Linux.desktop`, or `Current Server Linux.sh` if your desktop environment prefers shell launchers
+
+Terminal equivalent:
+
+```bash
+chmod +x "Install Current Linux.sh" "Current Server Linux.sh"
+./Install\ Current\ Linux.sh
+./Current\ Server\ Linux.sh
+```
+
+The run launcher checks first-time setup before any prompts, installs dependencies only when `node_modules` is missing or dependencies changed, starts the server in a terminal, and keeps the terminal attached so you can stop it with `Ctrl+C`.
 It will ask which server instance to run:
 
 - Standard: the normal Current server using `apps/server/config/current.config.json`
@@ -57,7 +97,7 @@ Open `http://127.0.0.1:6414` for the standard instance, or `http://127.0.0.1:808
 Manual equivalent:
 
 ```bash
-pnpm install
+pnpm setup
 pnpm launch:server:normal
 # or
 pnpm launch:server:dev
@@ -72,6 +112,8 @@ pnpm launch:server:normal -- --port 7000
 pnpm dev -- --port 7000
 CURRENT_PORT=7000 ./Current\ Server\ Linux.sh
 ```
+
+For internet hosting, forward TCP `6414` to the machine running the standard server unless you changed `server.port`. Voice also uses the configured UDP range, `40000-40100` by default. The LAN instance uses TCP `8081` by default.
 
 The server dev launcher builds and watches the web GUI, then serves it from the API server.
 For API-only development, run `pnpm --filter @current/server dev:api` and start the Vite client separately with `pnpm --filter @current/web dev`.

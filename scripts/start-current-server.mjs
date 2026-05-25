@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
@@ -41,22 +41,62 @@ function commandWorks(command, args = ['--version']) {
   return result.status === 0;
 }
 
+function commandStdout(command, args = ['--version']) {
+  const result = spawnSync(command, args, {
+    cwd: rootDir,
+    encoding: 'utf8',
+    shell: false,
+  });
+  if (result.status !== 0) {
+    return '';
+  }
+  return result.stdout.trim();
+}
+
+function readPnpmVersion() {
+  try {
+    const packageJson = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
+    const packageManager = typeof packageJson.packageManager === 'string'
+      ? packageJson.packageManager
+      : '';
+    const match = /^pnpm@(.+)$/.exec(packageManager);
+    return match?.[1] ?? '11.3.0';
+  } catch {
+    return '11.3.0';
+  }
+}
+
 function resolvePackageManager() {
-  const pnpm = commandName('pnpm');
-  if (commandWorks(pnpm)) {
+  const pnpmVersion = readPnpmVersion();
+  const npx = commandName('npx');
+  if (commandWorks(npx)) {
     return {
-      label: 'pnpm',
-      command: pnpm,
-      prefixArgs: [],
+      label: `pnpm ${pnpmVersion} via npx`,
+      command: npx,
+      prefixArgs: ['--yes', `pnpm@${pnpmVersion}`],
     };
   }
 
   const corepack = commandName('corepack');
   if (commandWorks(corepack, ['--version'])) {
+    spawnSync(corepack, ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
+      cwd: rootDir,
+      stdio: 'ignore',
+      shell: false,
+    });
     return {
-      label: 'corepack pnpm',
+      label: `pnpm ${pnpmVersion} via corepack`,
       command: corepack,
       prefixArgs: ['pnpm'],
+    };
+  }
+
+  const pnpm = commandName('pnpm');
+  if (commandStdout(pnpm) === pnpmVersion) {
+    return {
+      label: `pnpm ${pnpmVersion}`,
+      command: pnpm,
+      prefixArgs: [],
     };
   }
 
@@ -587,13 +627,18 @@ async function chooseMode() {
 
 function run(command, args, label, extraEnv = {}) {
   return new Promise((resolveRun, rejectRun) => {
+    const env = {
+      ...process.env,
+      ...extraEnv,
+    };
+    if (env.NO_COLOR) {
+      delete env.FORCE_COLOR;
+    } else {
+      env.FORCE_COLOR ??= '1';
+    }
     const child = spawn(command, args, {
       cwd: rootDir,
-      env: {
-        ...process.env,
-        FORCE_COLOR: process.env.FORCE_COLOR ?? '1',
-        ...extraEnv,
-      },
+      env,
       stdio: 'inherit',
       shell: false,
     });
@@ -632,8 +677,8 @@ async function main() {
   if (!packageManager) {
     throw new Error(
       [
-        'Could not find pnpm.',
-        'Install Node.js 20+ from https://nodejs.org, then run "corepack enable" once, or install pnpm directly.',
+        `Could not find pnpm@${readPnpmVersion()}.`,
+        'Install Node.js 20+ from https://nodejs.org with npm/npx, run "corepack enable" once, or install the pinned pnpm version directly.',
       ].join(' '),
     );
   }

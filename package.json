@@ -24,7 +24,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write .",
-    "setup": "bash scripts/bootstrap.sh"
+    "setup": "node scripts/install-local-current.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
