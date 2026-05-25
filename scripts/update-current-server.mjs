@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const defaultRepository = 'GaiaChat/current';
 const defaultManifestUrl = `https://github.com/${defaultRepository}/releases/latest/download/current-server-latest.json`;
+const fallbackPnpmVersion = process.env.CURRENT_PNPM_VERSION || '10.33.0';
 const scriptRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function usage() {
@@ -282,7 +283,11 @@ function packageManager() {
   if (commandWorks(corepack)) {
     return [corepack, ['pnpm']];
   }
-  throw new Error('Could not find pnpm or corepack. Install Node.js 20+ and enable corepack.');
+  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  if (commandWorks(npx)) {
+    return [npx, ['--yes', `pnpm@${fallbackPnpmVersion}`]];
+  }
+  throw new Error(`Could not find pnpm, corepack, or npx. Install Node.js 20+ and enable corepack, or install pnpm ${fallbackPnpmVersion}.`);
 }
 
 async function installProductionDependencies(versionDir) {

@@ -158,39 +158,28 @@ chmod 0640 "$CONFIG_PATH" 2>/dev/null || true
 
 cd "$CURRENT_WORKDIR"
 
+PNPM_VERSION="${CURRENT_PNPM_VERSION:-10.33.0}"
 if command -v pnpm >/dev/null 2>&1; then
-  PM="pnpm"
+  PM=(pnpm)
 elif command -v corepack >/dev/null 2>&1; then
-  PM="corepack pnpm"
-elif command -v npm >/dev/null 2>&1; then
-  PM="npm"
+  corepack enable >/dev/null 2>&1 || true
+  PM=(corepack pnpm)
+elif command -v npx >/dev/null 2>&1; then
+  PM=(npx --yes "pnpm@$PNPM_VERSION")
 else
-  echo "A package manager is required (pnpm, corepack, or npm)."
+  echo "pnpm is required. Install pnpm, enable corepack, or install npm/npx so this script can run pnpm@$PNPM_VERSION."
   exit 1
 fi
 
 if [[ -f "$CURRENT_WORKDIR/release-info.json" ]]; then
-  if [[ "$PM" == "npm" ]]; then
-    npm install --omit=dev
-  else
-    $PM install --prod --frozen-lockfile || $PM install --prod
-  fi
+  "${PM[@]}" install --prod --frozen-lockfile || "${PM[@]}" install --prod
 else
-  if [[ "$PM" == "npm" ]]; then
-    npm install
-    npm run build --workspace=@current/types
-    npm run build --workspace=@current/protocol
-    npm run build --workspace=@current/config
-    npm run build --workspace=@current/web
-    npm run build --workspace=@current/server
-  else
-    $PM install
-    $PM --filter @current/types build
-    $PM --filter @current/protocol build
-    $PM --filter @current/config build
-    $PM --filter @current/web build
-    $PM --filter @current/server build
-  fi
+  "${PM[@]}" install
+  "${PM[@]}" --filter @current/types build
+  "${PM[@]}" --filter @current/protocol build
+  "${PM[@]}" --filter @current/config build
+  "${PM[@]}" --filter @current/web build
+  "${PM[@]}" --filter @current/server build
 fi
 
 systemctl daemon-reload
