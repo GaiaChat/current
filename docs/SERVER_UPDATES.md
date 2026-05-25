@@ -68,6 +68,19 @@ The native systemd installer uses this split now. App code is replaced under
 Source-tree launchers can still use `apps/server/config`, `apps/server/data`,
 and `apps/server/uploads` for development or one-click local testing.
 
+Portable release bundles use the folder beside the extracted
+`current-server-v<version>` directory as their install root. For example,
+running `Update Current` from `/mnt/SSD4TB/current-server-v0.3.5` stages future
+releases under `/mnt/SSD4TB/versions`, preserves local config, data, uploads,
+and backups, then activates `/mnt/SSD4TB/current`.
+
+If that drive supports symlinks, `current` points at the active version. On
+symlinkless portable filesystems such as exFAT, the updater copies the active
+release into a real `current` directory and moves the previous active directory
+aside as `previous-current-<timestamp>`. Old versioned launch scripts are
+refreshed so launching them redirects to `current` instead of staying pinned to
+the old extracted folder.
+
 ## Launcher Behavior
 
 For one-click local servers:
@@ -76,6 +89,8 @@ For one-click local servers:
 - Prompt in TTY launches: `Update available: vX.Y.Z. Install now?`.
 - Skip update checks for dev mode unless explicitly requested.
 - Never overwrite config, data, uploads, or backups.
+- From portable release bundles, launch the active `current` directory when it
+  exists instead of the versioned folder that originally started the process.
 
 For systemd installs:
 
@@ -112,4 +127,6 @@ explicit server-owner token, because it restarts the process.
 `pnpm update:server` consumes `current-server-latest.json`, downloads and
 verifies the archive, backs up config and SQLite, stages
 `/opt/current/versions/<version>`, switches the `current` symlink, and restarts
-`current.service`.
+`current.service`. Portable bundles use the same checked flow, but default to
+the bundle's parent directory and fall back to a real `current` directory when
+the filesystem cannot create symlinks.

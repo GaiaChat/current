@@ -3024,8 +3024,8 @@ export function ServerSettingsModal({
               <small>Server settings have changed locally.</small>
             </div>
             <div className="settings-save-actions">
-              <button type="button" onClick={() => savedDraft && setDraft(savedDraft)} disabled={saveSettingsMutation.isPending}>Reset</button>
-              <button type="button" onClick={() => saveSettingsMutation.mutate()} disabled={saveSettingsMutation.isPending}>
+              <button className="settings-reset-changes-button" type="button" onClick={() => savedDraft && setDraft(savedDraft)} disabled={saveSettingsMutation.isPending}>Reset</button>
+              <button className="settings-save-changes-button" type="button" onClick={() => saveSettingsMutation.mutate()} disabled={saveSettingsMutation.isPending}>
                 {saveSettingsMutation.isPending ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
@@ -3064,9 +3064,12 @@ export function ServerSettingsModal({
         )}
 
         {factoryResetConfirmOpen && (
-          <div className="settings-warning-backdrop" onClick={() => setFactoryResetConfirmOpen(false)}>
+          <div className="settings-warning-backdrop factory-reset-backdrop" onClick={() => setFactoryResetConfirmOpen(false)}>
             <section
               className={`settings-warning factory-reset-warning liquid-surface ${overLight ? 'over-light-background' : ''}`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="factory-reset-confirm-title"
               onClick={(event) => event.stopPropagation()}
             >
               <LiquidGlassBackdrop
@@ -3082,7 +3085,7 @@ export function ServerSettingsModal({
               />
               <div className="settings-warning-title-row">
                 <span>Destructive action</span>
-                <h4>Confirm Factory Reset</h4>
+                <h4 id="factory-reset-confirm-title">Confirm Factory Reset</h4>
               </div>
               <p>This permanently erases the current server and returns Current to setup.</p>
               <label className="settings-confirm-phrase">

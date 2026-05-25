@@ -175,6 +175,10 @@ sudo pnpm update:server
 This downloads the latest server release, verifies its SHA-256, backs up config
 and SQLite, stages the new app under `/opt/current/versions`, and restarts the
 systemd service without overwriting messages, settings, uploads, or backups.
+When run from an extracted portable bundle such as
+`current-server-v0.3.5`, the updater stages releases next to that bundle
+instead. If the drive cannot create symlinks, it keeps a real `current`
+directory there so the one-click launchers start the active version.
 See [docs/SERVER_UPDATES.md](docs/SERVER_UPDATES.md) for the rollout/apply
 design.
 

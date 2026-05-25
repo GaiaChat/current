@@ -1444,30 +1444,37 @@ select {
 
 .voice-connection-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(2, auto);
-  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 8px;
 }
 
 .voice-connection-copy {
+  grid-column: 1 / -1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .voice-connection-copy strong,
 .voice-connection-copy small {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 .voice-connection-copy small {
   color: var(--ink-soft);
-  white-space: normal;
-  overflow-wrap: anywhere;
   line-height: 1.3;
 }
 
 .voice-network-diagnostics {
   color: var(--ink-muted);
   font-size: 0.76rem;
+  max-width: 100%;
 }
 
 .voice-controls {
@@ -1616,8 +1623,12 @@ select {
 }
 
 .voice-connection-row button {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 72px;
 }
 
 .chat-header button.active,
@@ -8395,9 +8406,17 @@ select option {
 }
 
 .settings-modal.discord-settings .settings-save-bar {
-  left: calc(var(--settings-nav-width) + var(--settings-floating-gap));
-  right: 0;
-  bottom: 0;
+  left: 50%;
+  right: auto;
+  bottom: 14px;
+  width: min(560px, calc(100% - 28px));
+  transform: translateX(-50%);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 20px;
   background:
     linear-gradient(180deg, rgba(235, 247, 255, 0.08), rgba(235, 247, 255, 0.032)),
     rgb(var(--side-panel-surface-rgb) / 0.58);
@@ -8421,9 +8440,41 @@ select option {
 
 .settings-save-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
+}
+
+.settings-save-actions button {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
+.settings-reset-changes-button {
+  min-width: 76px;
+}
+
+.settings-save-changes-button {
+  min-width: 142px;
+  border-color: rgba(110, 255, 191, 0.46) !important;
+  background:
+    linear-gradient(135deg, rgba(110, 255, 191, 0.3), rgba(48, 180, 255, 0.24)),
+    rgb(var(--side-panel-surface-rgb) / 0.46) !important;
+  color: var(--ink);
+  font-weight: 900;
+  box-shadow:
+    0 10px 24px rgba(48, 180, 255, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.settings-save-changes-button:hover:not(:disabled),
+.settings-save-changes-button:focus-visible:not(:disabled) {
+  border-color: rgba(160, 255, 218, 0.62) !important;
+  background:
+    linear-gradient(135deg, rgba(128, 255, 205, 0.38), rgba(83, 196, 255, 0.3)),
+    rgb(var(--side-panel-surface-rgb) / 0.52) !important;
+  outline: none;
 }
 
 .settings-modal-backdrop.settings-eyedropper-active {
@@ -8703,6 +8754,35 @@ select option {
     rgba(255, 107, 126, 0.18) !important;
 }
 
+.factory-reset-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: clamp(18px, 4vw, 34px);
+}
+
+.settings-warning.factory-reset-warning {
+  width: min(430px, calc(100vw - 36px));
+  max-height: min(560px, calc(100vh - 48px));
+  padding: 18px;
+  gap: 13px;
+  border-radius: 22px;
+  overflow: auto;
+}
+
+.settings-warning.factory-reset-warning .settings-warning-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
+}
+
+.settings-warning.factory-reset-warning .settings-warning-actions button {
+  min-width: 0;
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 .settings-floating-error,
 .gif-provider-warning,
 .composer-warning,
@@ -8856,14 +8936,18 @@ select option {
   }
 
   .settings-modal.discord-settings .settings-save-bar {
-    left: 0;
-    right: 0;
-    bottom: 0;
-    flex-wrap: wrap;
+    left: 50%;
+    right: auto;
+    bottom: 12px;
+    width: min(420px, calc(100% - 24px));
+    grid-template-columns: 1fr;
+    transform: translateX(-50%);
   }
 
   .settings-save-actions {
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: minmax(74px, 0.8fr) minmax(132px, 1.2fr);
+    justify-content: stretch;
   }
 
   .settings-floating-error {

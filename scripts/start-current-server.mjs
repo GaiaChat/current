@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -28,6 +28,7 @@ const lanStorage = {
   sqlitePath: 'apps/server/data/lan/current.sqlite',
   uploadDir: 'apps/server/uploads/lan',
 };
+const releaseBundleNamePattern = /^current-server-v\d+\.\d+\.\d+(?:[-+].+)?$/;
 const symlinkSafePnpmArgs = [
   '--config.node-linker=hoisted',
   '--config.package-import-method=copy',
@@ -36,6 +37,49 @@ const symlinkSafePnpmArgs = [
 
 function isReleaseBundle() {
   return existsSync(releaseInfoPath);
+}
+
+function maybeRedirectToPortableCurrent() {
+  if (process.env.CURRENT_SERVER_NO_PORTABLE_REDIRECT === '1') {
+    return;
+  }
+  if (!isReleaseBundle() || !releaseBundleNamePattern.test(basename(rootDir))) {
+    return;
+  }
+
+  const currentRoot = join(dirname(rootDir), 'current');
+  const currentStartScript = join(currentRoot, 'scripts', 'start-current-server.mjs');
+  if (!existsSync(currentStartScript)) {
+    return;
+  }
+
+  let currentRealPath;
+  let rootRealPath;
+  try {
+    currentRealPath = realpathSync(currentRoot);
+    rootRealPath = realpathSync(rootDir);
+  } catch {
+    return;
+  }
+
+  if (currentRealPath === rootRealPath) {
+    return;
+  }
+
+  console.log(`[Current launch] Redirecting to active server at ${currentRoot}`);
+  const result = spawnSync(process.execPath, [currentStartScript, ...process.argv.slice(2)], {
+    cwd: currentRoot,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      CURRENT_SERVER_NO_PORTABLE_REDIRECT: '1',
+    },
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  process.exit(result.status ?? 1);
 }
 
 function readCurrentVersion() {
@@ -51,6 +95,8 @@ function readCurrentVersion() {
   }
   return 'dev';
 }
+
+maybeRedirectToPortableCurrent();
 
 function printGaiaChatBanner() {
   console.log('  ____       _       ____ _           _');

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync, realpathSync } from 'node:fs';
 import {
   access,
   copyFile,
+  cp,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -22,6 +24,45 @@ const defaultRepository = 'GaiaChat/current';
 const defaultManifestUrl = `https://github.com/${defaultRepository}/releases/latest/download/current-server-latest.json`;
 const fallbackPnpmVersion = process.env.CURRENT_PNPM_VERSION || '11.3.0';
 const scriptRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const scriptRootRealPath = (() => {
+  try {
+    return realpathSync(scriptRoot);
+  } catch {
+    return scriptRoot;
+  }
+})();
+const releaseBundleNamePattern = /^current-server-v\d+\.\d+\.\d+(?:[-+].+)?$/;
+const nativeInstallRoot = '/opt/current';
+const scriptRootHasReleaseInfo = existsSync(join(scriptRoot, 'release-info.json'));
+const scriptRootIsNativeCurrent =
+  scriptRoot === join(nativeInstallRoot, 'current') ||
+  scriptRootRealPath.startsWith(join(nativeInstallRoot, 'versions') + '/');
+const scriptRootLooksPortable =
+  scriptRootHasReleaseInfo &&
+  !scriptRootIsNativeCurrent &&
+  (releaseBundleNamePattern.test(basename(scriptRoot)) ||
+    releaseBundleNamePattern.test(basename(scriptRootRealPath)) ||
+    basename(scriptRoot) === 'current');
+const portableInstallRoot = (() => {
+  if (!scriptRootLooksPortable) {
+    return null;
+  }
+  if (basename(scriptRoot) === 'current') {
+    return dirname(scriptRoot);
+  }
+  const parentDir = dirname(scriptRoot);
+  return basename(parentDir) === 'versions' ? dirname(parentDir) : parentDir;
+})();
+const defaultInstallRoot =
+  process.env.CURRENT_SERVER_INSTALL_ROOT || (portableInstallRoot ?? nativeInstallRoot);
+const defaultStateDir =
+  process.env.CURRENT_SERVER_STATE_DIR ||
+  (scriptRootLooksPortable ? join(defaultInstallRoot, '.current-state') : '/var/lib/current');
+const defaultConfigPath =
+  process.env.CURRENT_CONFIG_PATH ||
+  (scriptRootLooksPortable
+    ? join(scriptRoot, 'apps', 'server', 'config', 'current.config.json')
+    : '/etc/current/current.config.json');
 const symlinkSafePnpmArgs = [
   '--config.node-linker=hoisted',
   '--config.package-import-method=copy',
@@ -44,6 +85,17 @@ const requiredReleaseFiles = [
   'apps/server/dist/index.js',
   'apps/web/dist/index.html',
 ];
+const fallbackPortablePreservePaths = [
+  'apps/server/config',
+  'apps/server/data',
+  'apps/server/uploads',
+  'apps/server/backups',
+];
+const portableRefreshedScriptFiles = [
+  'update-current-server.mjs',
+  'scripts/update-current-server.mjs',
+  'scripts/start-current-server.mjs',
+];
 
 function usage() {
   return [
@@ -56,13 +108,14 @@ function usage() {
     '  --no-restart                Stage the update without restarting current.service.',
     '  --no-pause                  Do not wait for Enter/Return before exiting.',
     '  --manifest-url <url>        Override the update manifest URL.',
-    '  --install-root <path>       Default: /opt/current',
-    '  --state-dir <path>          Default: /var/lib/current',
-    '  --config <path>             Default: /etc/current/current.config.json',
+    `  --install-root <path>       Default: ${defaultInstallRoot}`,
+    `  --state-dir <path>          Default: ${defaultStateDir}`,
+    `  --config <path>             Default: ${defaultConfigPath}`,
   ].join('\n');
 }
 
 function parseArgs() {
+  let installRootWasExplicit = Boolean(process.env.CURRENT_SERVER_INSTALL_ROOT);
   const options = {
     check: false,
     reinstall: false,
@@ -70,9 +123,9 @@ function parseArgs() {
     restart: true,
     noPause: false,
     manifestUrl: process.env.CURRENT_SERVER_UPDATE_MANIFEST_URL || defaultManifestUrl,
-    installRoot: process.env.CURRENT_SERVER_INSTALL_ROOT || '/opt/current',
-    stateDir: process.env.CURRENT_SERVER_STATE_DIR || '/var/lib/current',
-    configPath: process.env.CURRENT_CONFIG_PATH || '/etc/current/current.config.json',
+    installRoot: defaultInstallRoot,
+    stateDir: defaultStateDir,
+    configPath: defaultConfigPath,
   };
 
   const args = process.argv.slice(2);
@@ -102,7 +155,12 @@ function parseArgs() {
       options.noPause = true;
       continue;
     }
-    if (arg === '--manifest-url' || arg === '--install-root' || arg === '--state-dir' || arg === '--config') {
+    if (
+      arg === '--manifest-url' ||
+      arg === '--install-root' ||
+      arg === '--state-dir' ||
+      arg === '--config'
+    ) {
       const value = args[index + 1];
       if (!value) {
         throw new Error(`Missing value for ${arg}.`);
@@ -112,6 +170,7 @@ function parseArgs() {
         options.manifestUrl = value;
       } else if (arg === '--install-root') {
         options.installRoot = value;
+        installRootWasExplicit = true;
       } else if (arg === '--state-dir') {
         options.stateDir = value;
       } else {
@@ -127,6 +186,9 @@ function parseArgs() {
     installRoot: resolve(options.installRoot),
     stateDir: resolve(options.stateDir),
     configPath: resolve(options.configPath),
+    portableSourceDir: scriptRootLooksPortable && !installRootWasExplicit ? scriptRoot : null,
+    portablePhysicalSourceDir:
+      scriptRootLooksPortable && !installRootWasExplicit ? scriptRootRealPath : null,
   };
 }
 
@@ -172,11 +234,18 @@ async function waitForEnterToClose(options) {
 function printCompletionSummary(input) {
   console.log('');
   console.log('[Current update] ==================================================');
-  console.log(`[Current update] Update complete. Current server v${input.latestVersion} is installed.`);
+  console.log(
+    `[Current update] Update complete. Current server v${input.latestVersion} is installed.`,
+  );
   if (input.reinstalled) {
     console.log('[Current update] Reinstalled the current release by request.');
   }
   console.log(`[Current update] Active app: ${input.versionDir}`);
+  if (input.options.portableSourceDir) {
+    console.log(
+      `[Current update] Portable active path: ${join(input.options.installRoot, 'current')}`,
+    );
+  }
   console.log(`[Current update] Config: ${input.options.configPath}`);
   console.log(`[Current update] State: ${input.options.stateDir}`);
   if (input.restartResult === 'restarted') {
@@ -217,7 +286,9 @@ function runOutput(command, args, label) {
     encoding: 'utf8',
   });
   if (result.status !== 0) {
-    throw new Error(`${label} failed: ${result.stderr || result.stdout || `exit code ${result.status ?? 1}`}`);
+    throw new Error(
+      `${label} failed: ${result.stderr || result.stdout || `exit code ${result.status ?? 1}`}`,
+    );
   }
   return result.stdout;
 }
@@ -311,6 +382,48 @@ async function installedVersion(installRoot) {
   return null;
 }
 
+async function releaseVersionAt(rootDir) {
+  for (const path of [join(rootDir, 'release-info.json'), join(rootDir, 'package.json')]) {
+    try {
+      const parsed = JSON.parse(await readFile(path, 'utf8'));
+      if (typeof parsed.version === 'string' && parsed.version.trim()) {
+        return parsed.version.trim();
+      }
+    } catch {
+      // Keep looking.
+    }
+  }
+  return null;
+}
+
+async function portableCurrentNeedsRepair(options, latestVersion) {
+  if (!options.portableSourceDir) {
+    return false;
+  }
+
+  const currentPath = join(options.installRoot, 'current');
+  const currentVersion = await releaseVersionAt(currentPath);
+  return currentVersion !== latestVersion;
+}
+
+async function repairPortableCurrentIfNeeded(options, latestVersion) {
+  if (!(await portableCurrentNeedsRepair(options, latestVersion))) {
+    return false;
+  }
+
+  if (options.check) {
+    console.log(
+      `[Current update] Portable active directory is not on ${latestVersion}; run without --check to repair ${join(options.installRoot, 'current')}.`,
+    );
+    return false;
+  }
+
+  const activeSourceDir = options.portablePhysicalSourceDir || options.portableSourceDir;
+  await switchCurrentSymlink(options, activeSourceDir);
+  await refreshPortableSourceScripts(options, activeSourceDir);
+  return true;
+}
+
 function selectLinuxAsset(manifest) {
   const assets = Array.isArray(manifest.assets) ? manifest.assets : [];
   const asset = assets.find((candidate) => candidate?.platform === 'linux') ?? assets[0];
@@ -341,6 +454,27 @@ function validateArchivePaths(archivePath, expectedRoot) {
   }
 }
 
+function normalizePortablePreservePath(path) {
+  if (typeof path !== 'string') {
+    return null;
+  }
+  const normalized = path.replaceAll('\\', '/').replace(/\/+$/g, '');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+    return null;
+  }
+  const parts = normalized.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) {
+    return null;
+  }
+  return parts.join('/');
+}
+
+function portablePreservePaths(manifest) {
+  const manifestPaths = Array.isArray(manifest.install?.preserve) ? manifest.install.preserve : [];
+  const relativeManifestPaths = manifestPaths.map(normalizePortablePreservePath).filter(Boolean);
+  return relativeManifestPaths.length > 0 ? relativeManifestPaths : fallbackPortablePreservePaths;
+}
+
 function resolveStatePath(path, currentAppDir) {
   return isAbsolute(path) ? path : resolve(currentAppDir, path);
 }
@@ -365,14 +499,25 @@ async function backupServerState(options) {
   try {
     const config = JSON.parse(await readFile(options.configPath, 'utf8'));
     const currentAppDir = join(options.installRoot, 'current');
-    const sqlitePath = typeof config.storage?.sqlitePath === 'string'
-      ? resolveStatePath(config.storage.sqlitePath, currentAppDir)
-      : null;
+    const sqlitePath =
+      typeof config.storage?.sqlitePath === 'string'
+        ? resolveStatePath(config.storage.sqlitePath, currentAppDir)
+        : null;
     if (sqlitePath) {
       const sqliteBase = basename(sqlitePath);
       await backupFileIfPresent(sqlitePath, backupDir, `${stamp}-${sqliteBase}`, backups);
-      await backupFileIfPresent(`${sqlitePath}-wal`, backupDir, `${stamp}-${sqliteBase}-wal`, backups);
-      await backupFileIfPresent(`${sqlitePath}-shm`, backupDir, `${stamp}-${sqliteBase}-shm`, backups);
+      await backupFileIfPresent(
+        `${sqlitePath}-wal`,
+        backupDir,
+        `${stamp}-${sqliteBase}-wal`,
+        backups,
+      );
+      await backupFileIfPresent(
+        `${sqlitePath}-shm`,
+        backupDir,
+        `${stamp}-${sqliteBase}-shm`,
+        backups,
+      );
     }
   } catch (error) {
     console.warn(`[Current update] Could not inspect config for SQLite backup: ${error.message}`);
@@ -402,7 +547,9 @@ function packageManager() {
   if (commandStdout(pnpm) === fallbackPnpmVersion) {
     return [pnpm, []];
   }
-  throw new Error(`Could not find pnpm, corepack, or npx. Install Node.js 20+ and enable corepack, or install pnpm ${fallbackPnpmVersion}.`);
+  throw new Error(
+    `Could not find pnpm, corepack, or npx. Install Node.js 20+ and enable corepack, or install pnpm ${fallbackPnpmVersion}.`,
+  );
 }
 
 async function installProductionDependencies(versionDir) {
@@ -449,9 +596,7 @@ async function verifyStagedReleaseBundle(versionDir, expectedVersion) {
     }
   }
   if (missingFiles.length > 0) {
-    throw new Error(
-      `Staged update is incomplete. Missing: ${missingFiles.join(', ')}`,
-    );
+    throw new Error(`Staged update is incomplete. Missing: ${missingFiles.join(', ')}`);
   }
 
   const releaseInfo = JSON.parse(await readFile(join(versionDir, 'release-info.json'), 'utf8'));
@@ -467,19 +612,140 @@ async function verifyStagedReleaseBundle(versionDir, expectedVersion) {
   );
 }
 
+async function preservePortableServerState(options, versionDir, manifest) {
+  if (!options.portableSourceDir) {
+    return;
+  }
+
+  const copiedPaths = [];
+  for (const relativePath of portablePreservePaths(manifest)) {
+    const sourcePath = join(options.portableSourceDir, relativePath);
+    if (!(await pathExists(sourcePath))) {
+      continue;
+    }
+    const targetPath = join(versionDir, relativePath);
+    await mkdir(dirname(targetPath), { recursive: true });
+    await cp(sourcePath, targetPath, {
+      recursive: true,
+      force: true,
+      errorOnExist: false,
+    });
+    copiedPaths.push(relativePath);
+  }
+
+  if (copiedPaths.length > 0) {
+    console.log(`[Current update] Preserved portable server state: ${copiedPaths.join(', ')}`);
+  } else {
+    console.log('[Current update] No portable server state was found to preserve.');
+  }
+}
+
+async function refreshPortableSourceScripts(options, versionDir) {
+  if (!options.portableSourceDir) {
+    return;
+  }
+
+  const copiedFiles = [];
+  const targetDirs = Array.from(
+    new Set(
+      [options.portableSourceDir, options.portablePhysicalSourceDir].filter(
+        (path) => typeof path === 'string' && path.length > 0,
+      ),
+    ),
+  );
+  for (const relativePath of portableRefreshedScriptFiles) {
+    const sourcePath = join(versionDir, relativePath);
+    if (!(await pathExists(sourcePath))) {
+      continue;
+    }
+    for (const targetDir of targetDirs) {
+      const targetPath = join(targetDir, relativePath);
+      if (resolve(sourcePath) === resolve(targetPath)) {
+        continue;
+      }
+      await mkdir(dirname(targetPath), { recursive: true });
+      await copyFile(sourcePath, targetPath);
+    }
+    copiedFiles.push(relativePath);
+  }
+
+  if (copiedFiles.length > 0) {
+    console.log(
+      `[Current update] Refreshed old portable launch scripts: ${copiedFiles.join(', ')}`,
+    );
+  }
+}
+
+function canFallBackToPortableDirectory(options, error) {
+  return (
+    options.portableSourceDir &&
+    ['EPERM', 'EOPNOTSUPP', 'ENOSYS', 'EINVAL', 'EISDIR', 'ENOTEMPTY'].includes(error?.code)
+  );
+}
+
+async function switchCurrentDirectoryCopy(options, targetDir, cause) {
+  const currentPath = join(options.installRoot, 'current');
+  const tempDir = join(options.installRoot, `.current-${process.pid}`);
+  const previousDir = join(
+    options.installRoot,
+    `previous-current-${new Date().toISOString().replace(/[:.]/g, '-')}`,
+  );
+
+  console.log(
+    `[Current update] Portable drive cannot create symlinks (${cause.code || cause.message}).`,
+  );
+  console.log(`[Current update] Copying active server directory to ${currentPath} instead.`);
+
+  await rm(tempDir, { recursive: true, force: true });
+  await cp(targetDir, tempDir, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+  });
+
+  try {
+    await lstat(currentPath);
+    await rename(currentPath, previousDir);
+    console.log(`[Current update] Moved previous active server to ${previousDir}.`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      await rm(tempDir, { recursive: true, force: true });
+      throw new Error(`Could not move existing ${currentPath}: ${error.message}`);
+    }
+  }
+
+  await rename(tempDir, currentPath);
+  console.log(`[Current update] Active server now lives at ${currentPath}.`);
+  return 'directory';
+}
+
 async function switchCurrentSymlink(options, targetDir) {
   await mkdir(options.installRoot, { recursive: true });
   const currentPath = join(options.installRoot, 'current');
   const tempLink = join(options.installRoot, `.current-${process.pid}`);
   await rm(tempLink, { force: true });
-  await symlink(targetDir, tempLink, 'dir');
+  try {
+    await symlink(targetDir, tempLink, 'dir');
+  } catch (error) {
+    await rm(tempLink, { recursive: true, force: true });
+    if (canFallBackToPortableDirectory(options, error)) {
+      return switchCurrentDirectoryCopy(options, targetDir, error);
+    }
+    throw error;
+  }
   try {
     await rename(tempLink, currentPath);
   } catch (error) {
-    await rm(tempLink, { force: true });
-    throw new Error(`Could not switch ${currentPath}. If it is a real directory, move it aside first. ${error.message}`);
+    await rm(tempLink, { recursive: true, force: true });
+    if (canFallBackToPortableDirectory(options, error)) {
+      return switchCurrentDirectoryCopy(options, targetDir, error);
+    }
+    throw new Error(
+      `Could not switch ${currentPath}. If it is a real directory, move it aside first. ${error.message}`,
+    );
   }
   console.log(`[Current update] Active server now points to ${targetDir}.`);
+  return 'symlink';
 }
 
 async function restartService(shouldRestart) {
@@ -506,6 +772,10 @@ async function main(options) {
   let reinstallingCurrentVersion = false;
   if (currentVersion === latestVersion && !options.reinstall) {
     console.log(`[Current update] Current server is already on ${latestVersion}.`);
+    const repairedPortableCurrent = await repairPortableCurrentIfNeeded(options, latestVersion);
+    if (repairedPortableCurrent) {
+      console.log('[Current update] Portable active directory was repaired.');
+    }
     if (options.check) {
       return;
     }
@@ -524,6 +794,10 @@ async function main(options) {
 
   console.log(`[Current update] Installed: ${currentVersion || 'unknown'}`);
   console.log(`[Current update] Available: ${latestVersion}`);
+  console.log(`[Current update] Install root: ${options.installRoot}`);
+  if (options.portableSourceDir) {
+    console.log(`[Current update] Portable source: ${options.portableSourceDir}`);
+  }
   if (options.check) {
     return;
   }
@@ -547,8 +821,10 @@ async function main(options) {
   await backupServerState(options);
   const versionDir = await extractVersion(archivePath, options, archiveRoot);
   await verifyStagedReleaseBundle(versionDir, latestVersion);
+  await preservePortableServerState(options, versionDir, manifest);
   await installProductionDependencies(versionDir);
   await switchCurrentSymlink(options, versionDir);
+  await refreshPortableSourceScripts(options, versionDir);
   const restartResult = await restartService(options.restart);
   printCompletionSummary({
     latestVersion,
