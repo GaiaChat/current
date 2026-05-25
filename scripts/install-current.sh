@@ -159,15 +159,16 @@ chmod 0640 "$CONFIG_PATH" 2>/dev/null || true
 cd "$CURRENT_WORKDIR"
 
 PNPM_VERSION="${CURRENT_PNPM_VERSION:-11.3.0}"
-if command -v pnpm >/dev/null 2>&1; then
-  PM=(pnpm)
+if command -v npx >/dev/null 2>&1; then
+  PM=(npx --yes "pnpm@$PNPM_VERSION")
 elif command -v corepack >/dev/null 2>&1; then
   corepack enable >/dev/null 2>&1 || true
+  corepack prepare "pnpm@$PNPM_VERSION" --activate >/dev/null 2>&1 || true
   PM=(corepack pnpm)
-elif command -v npx >/dev/null 2>&1; then
-  PM=(npx --yes "pnpm@$PNPM_VERSION")
+elif command -v pnpm >/dev/null 2>&1 && [[ "$(pnpm --version 2>/dev/null)" == "$PNPM_VERSION" ]]; then
+  PM=(pnpm)
 else
-  echo "pnpm is required. Install pnpm, enable corepack, or install npm/npx so this script can run pnpm@$PNPM_VERSION."
+  echo "pnpm@$PNPM_VERSION is required. Install npm/npx, enable corepack, or update pnpm."
   exit 1
 fi
 

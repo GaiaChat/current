@@ -130,6 +130,17 @@ function commandWorks(command, args = ['--version']) {
   return result.status === 0;
 }
 
+function commandStdout(command, args = ['--version']) {
+  const result = spawnSync(command, args, {
+    cwd: scriptRoot,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    return '';
+  }
+  return result.stdout.trim();
+}
+
 async function pathExists(path) {
   try {
     await access(path);
@@ -275,17 +286,21 @@ async function backupServerState(options) {
 }
 
 function packageManager() {
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  if (commandWorks(pnpm)) {
-    return [pnpm, []];
-  }
-  const corepack = process.platform === 'win32' ? 'corepack.cmd' : 'corepack';
-  if (commandWorks(corepack)) {
-    return [corepack, ['pnpm']];
-  }
   const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
   if (commandWorks(npx)) {
     return [npx, ['--yes', `pnpm@${fallbackPnpmVersion}`]];
+  }
+  const corepack = process.platform === 'win32' ? 'corepack.cmd' : 'corepack';
+  if (commandWorks(corepack)) {
+    spawnSync(corepack, ['prepare', `pnpm@${fallbackPnpmVersion}`, '--activate'], {
+      cwd: scriptRoot,
+      stdio: 'ignore',
+    });
+    return [corepack, ['pnpm']];
+  }
+  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  if (commandStdout(pnpm) === fallbackPnpmVersion) {
+    return [pnpm, []];
   }
   throw new Error(`Could not find pnpm, corepack, or npx. Install Node.js 20+ and enable corepack, or install pnpm ${fallbackPnpmVersion}.`);
 }

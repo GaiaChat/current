@@ -29,6 +29,7 @@ type GifProvider = 'klipy' | 'giphy';
 type GifFallbackProvider = 'none' | GifProvider;
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type LinkPolicy = 'allow' | 'members_only' | 'deny';
+type ScreenShareTransportMode = 'p2p_mesh';
 type ServerAssetKind = 'icon' | 'banner' | 'background';
 type SettingsSection =
   | 'overview'
@@ -44,6 +45,10 @@ type SettingsSection =
   | 'advanced'
   | 'ownership'
   | 'factory-reset';
+
+const BYTES_PER_MIB = 1024 * 1024;
+const MAX_ATTACHMENT_MIB = 1024;
+const DEFAULT_ALLOWED_MIME_PREFIXES = ['image/', 'video/', 'audio/', 'application/pdf'];
 
 interface MemberOption {
   id: string;
@@ -143,6 +148,15 @@ interface RedactedConfig {
     turnUrls: string[];
     turnUsernameConfigured: boolean;
     turnCredentialConfigured: boolean;
+    screenShare: {
+      enabled: boolean;
+      transportMode: ScreenShareTransportMode;
+      maxWidth: number;
+      maxHeight: number;
+      maxFrameRate: number;
+      maxBitrateKbps: number;
+      maxActiveSharesPerChannel: number;
+    };
   };
   observability: {
     metricsEnabled: boolean;
@@ -277,12 +291,31 @@ interface SettingsDraft {
     clearTurnUsername: boolean;
     turnCredential: string;
     clearTurnCredential: boolean;
+    screenShare: {
+      enabled: boolean;
+      transportMode: ScreenShareTransportMode;
+      maxWidth: number;
+      maxHeight: number;
+      maxFrameRate: number;
+      maxBitrateKbps: number;
+      maxActiveSharesPerChannel: number;
+    };
   };
   observability: {
     metricsEnabled: boolean;
     logLevel: LogLevel;
   };
 }
+
+const DEFAULT_SCREEN_SHARE_SETTINGS: SettingsDraft['rtc']['screenShare'] = {
+  enabled: true,
+  transportMode: 'p2p_mesh',
+  maxWidth: 1280,
+  maxHeight: 720,
+  maxFrameRate: 30,
+  maxBitrateKbps: 2500,
+  maxActiveSharesPerChannel: 2,
+};
 
 type E2eeSettingsState = E2eeKeyState | { status: 'loading' };
 
@@ -574,80 +607,103 @@ function getEyeDropperConstructor(): EyeDropperConstructor | null {
 }
 
 function createDraft(payload: ServerSettingsPayload): SettingsDraft {
+  const serverPayload = payload.server ?? ({} as ServerSettingsPayload['server']);
+  const configPayload = payload.config ?? ({} as RedactedConfig);
+  const serverConfig = configPayload.server ?? ({} as RedactedConfig['server']);
+  const serverTls = serverConfig.tls ?? ({} as RedactedConfig['server']['tls']);
+  const authConfig = configPayload.auth ?? ({} as RedactedConfig['auth']);
+  const storageConfig = configPayload.storage ?? ({} as RedactedConfig['storage']);
+  const mediaConfig = configPayload.media ?? ({} as RedactedConfig['media']);
+  const appearanceConfig =
+    configPayload.appearance ?? serverPayload.appearance ?? ({} as ServerAppearancePayload);
+  const moderationConfig = configPayload.moderation ?? ({} as RedactedConfig['moderation']);
+  const rtcConfig = configPayload.rtc ?? ({} as RedactedConfig['rtc']);
+  const observabilityConfig = configPayload.observability ?? ({} as RedactedConfig['observability']);
+  const allowedMimePrefixes = Array.isArray(mediaConfig.allowedMimePrefixes)
+    ? mediaConfig.allowedMimePrefixes
+    : DEFAULT_ALLOWED_MIME_PREFIXES;
+  const turnUrls = Array.isArray(rtcConfig.turnUrls) ? rtcConfig.turnUrls : [];
+  const screenShare = {
+    ...DEFAULT_SCREEN_SHARE_SETTINGS,
+    ...(rtcConfig.screenShare ?? {}),
+  };
+
   return {
     server: {
-      name: payload.server.name,
-      slug: payload.server.slug,
-      host: payload.server.host,
-      port: payload.server.port,
-      publicUrl: payload.server.publicUrl,
-      registrationMode: payload.server.registrationMode,
-      iconAttachmentId: payload.server.iconAttachmentId ?? '',
-      bannerAttachmentId: payload.server.bannerAttachmentId ?? '',
-      iconUrl: payload.server.iconUrl ?? '',
-      bannerUrl: payload.server.bannerUrl ?? '',
-      tlsEnabled: payload.config.server.tls.enabled,
-      tlsCertPath: payload.config.server.tls.certPath,
-      tlsKeyPath: payload.config.server.tls.keyPath,
+      name: serverPayload.name ?? serverConfig.name ?? 'Current Server',
+      slug: serverPayload.slug ?? serverConfig.slug ?? 'current-server',
+      host: serverPayload.host ?? serverConfig.host ?? '0.0.0.0',
+      port: serverPayload.port ?? serverConfig.port ?? 6414,
+      publicUrl: serverPayload.publicUrl ?? serverConfig.publicUrl ?? 'http://127.0.0.1:6414',
+      registrationMode: serverPayload.registrationMode ?? serverConfig.registrationMode ?? 'invite_only',
+      iconAttachmentId: serverPayload.iconAttachmentId ?? '',
+      bannerAttachmentId: serverPayload.bannerAttachmentId ?? '',
+      iconUrl: serverPayload.iconUrl ?? '',
+      bannerUrl: serverPayload.bannerUrl ?? '',
+      tlsEnabled: serverTls.enabled ?? false,
+      tlsCertPath: serverTls.certPath ?? '',
+      tlsKeyPath: serverTls.keyPath ?? '',
     },
     auth: {
-      mode: payload.config.auth.mode,
-      atprotoClientId: payload.config.auth.atprotoClientId,
-      redirectUri: payload.config.auth.redirectUri,
-      lanRedirectBaseUrl: payload.config.auth.lanRedirectBaseUrl,
-      authorizationEndpoint: payload.config.auth.authorizationEndpoint,
-      tokenEndpoint: payload.config.auth.tokenEndpoint,
-      profileEndpoint: payload.config.auth.profileEndpoint,
-      scope: payload.config.auth.scope,
-      allowDevLogin: payload.config.auth.allowDevLogin,
+      mode: authConfig.mode ?? 'atproto',
+      atprotoClientId: authConfig.atprotoClientId ?? '',
+      redirectUri: authConfig.redirectUri ?? 'http://127.0.0.1:6414/api/v1/auth/oauth/callback',
+      lanRedirectBaseUrl: authConfig.lanRedirectBaseUrl ?? '',
+      authorizationEndpoint: authConfig.authorizationEndpoint ?? 'https://bsky.social/oauth/authorize',
+      tokenEndpoint: authConfig.tokenEndpoint ?? 'https://bsky.social/oauth/token',
+      profileEndpoint:
+        authConfig.profileEndpoint ?? 'https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile',
+      scope: authConfig.scope ?? 'atproto transition:generic identity:handle rpc?aud=*&lxm=com.atproto.server.getSession',
+      allowDevLogin: authConfig.allowDevLogin ?? true,
       cookieSecret: '',
     },
     storage: {
-      sqlitePath: payload.config.storage.sqlitePath,
-      uploadDir: payload.config.storage.uploadDir,
-      mediaBackend: payload.config.storage.mediaBackend,
-      s3Endpoint: payload.config.storage.s3?.endpoint ?? '',
-      s3Bucket: payload.config.storage.s3?.bucket ?? '',
+      sqlitePath: storageConfig.sqlitePath ?? 'apps/server/data/current.sqlite',
+      uploadDir: storageConfig.uploadDir ?? 'apps/server/uploads',
+      mediaBackend: storageConfig.mediaBackend ?? 'local',
+      s3Endpoint: storageConfig.s3?.endpoint ?? '',
+      s3Bucket: storageConfig.s3?.bucket ?? '',
       s3AccessKeyId: '',
       s3SecretAccessKey: '',
     },
     media: {
-      maxAttachmentBytes: payload.config.media.maxAttachmentBytes,
-      allowedMimePrefixesText: payload.config.media.allowedMimePrefixes.join('\n'),
-      gifProvider: payload.config.media.gifProvider,
-      gifFallbackProvider: payload.config.media.gifFallbackProvider,
+      maxAttachmentBytes: mediaConfig.maxAttachmentBytes ?? 10 * BYTES_PER_MIB,
+      allowedMimePrefixesText: allowedMimePrefixes.join('\n'),
+      gifProvider: mediaConfig.gifProvider ?? 'klipy',
+      gifFallbackProvider: mediaConfig.gifFallbackProvider ?? 'none',
       klipyApiKey: '',
       clearKlipyApiKey: false,
       giphyApiKey: '',
       clearGiphyApiKey: false,
     },
     appearance: {
-      background: payload.config.appearance.background,
-      panelColor: payload.config.appearance.panelColor || '',
-      ownMessageColor: payload.config.appearance.ownMessageColor || '',
-      otherMessageColor: payload.config.appearance.otherMessageColor || '',
+      background: appearanceConfig.background ?? {},
+      panelColor: appearanceConfig.panelColor || '',
+      ownMessageColor: appearanceConfig.ownMessageColor || '',
+      otherMessageColor: appearanceConfig.otherMessageColor || '',
     },
     moderation: {
-      defaultSlowmodeSeconds: payload.config.moderation.defaultSlowmodeSeconds,
-      maxMentionsPerMessage: payload.config.moderation.maxMentionsPerMessage,
-      linkPolicy: payload.config.moderation.linkPolicy,
+      defaultSlowmodeSeconds: moderationConfig.defaultSlowmodeSeconds ?? 0,
+      maxMentionsPerMessage: moderationConfig.maxMentionsPerMessage ?? 8,
+      linkPolicy: moderationConfig.linkPolicy ?? 'members_only',
     },
     rtc: {
-      listenIp: payload.config.rtc.listenIp,
-      announcedIp: payload.config.rtc.announcedIp,
-      udpMinPort: payload.config.rtc.udpMinPort,
-      udpMaxPort: payload.config.rtc.udpMaxPort,
-      workerCount: payload.config.rtc.workerCount,
-      sessionTimeoutMs: payload.config.rtc.sessionTimeoutMs,
-      turnUrlsText: payload.config.rtc.turnUrls.join('\n'),
+      listenIp: rtcConfig.listenIp ?? '0.0.0.0',
+      announcedIp: rtcConfig.announcedIp ?? '127.0.0.1',
+      udpMinPort: rtcConfig.udpMinPort ?? 40000,
+      udpMaxPort: rtcConfig.udpMaxPort ?? 40100,
+      workerCount: rtcConfig.workerCount ?? 0,
+      sessionTimeoutMs: rtcConfig.sessionTimeoutMs ?? 45_000,
+      turnUrlsText: turnUrls.join('\n'),
       turnUsername: '',
       clearTurnUsername: false,
       turnCredential: '',
       clearTurnCredential: false,
+      screenShare,
     },
     observability: {
-      metricsEnabled: payload.config.observability.metricsEnabled,
-      logLevel: payload.config.observability.logLevel,
+      metricsEnabled: observabilityConfig.metricsEnabled ?? true,
+      logLevel: observabilityConfig.logLevel ?? 'info',
     },
   };
 }
@@ -668,6 +724,14 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
+function bytesToMib(bytes: number): number {
+  return Math.round((bytes / BYTES_PER_MIB) * 100) / 100;
+}
+
+function mibToBytes(mib: number): number {
+  return Math.round(mib * BYTES_PER_MIB);
+}
+
 function formatPermission(permission: Permission): string {
   return permission
     .toLowerCase()
@@ -677,7 +741,7 @@ function formatPermission(permission: Permission): string {
 }
 
 function isRestartField(path: string, settings?: ServerSettingsPayload): boolean {
-  return Boolean(settings?.restartRequiredFieldPaths.includes(path));
+  return Boolean(settings?.restartRequiredFieldPaths?.includes(path));
 }
 
 function buildSettingsPatch(draft: SettingsDraft) {
@@ -777,6 +841,15 @@ function buildSettingsPatch(draft: SettingsDraft) {
         : draft.rtc.turnCredential.trim()
           ? { turnCredential: draft.rtc.turnCredential.trim() }
           : {}),
+      screenShare: {
+        enabled: draft.rtc.screenShare.enabled,
+        transportMode: draft.rtc.screenShare.transportMode,
+        maxWidth: Number(draft.rtc.screenShare.maxWidth),
+        maxHeight: Number(draft.rtc.screenShare.maxHeight),
+        maxFrameRate: Number(draft.rtc.screenShare.maxFrameRate),
+        maxBitrateKbps: Number(draft.rtc.screenShare.maxBitrateKbps),
+        maxActiveSharesPerChannel: Number(draft.rtc.screenShare.maxActiveSharesPerChannel),
+      },
     },
     observability: {
       metricsEnabled: draft.observability.metricsEnabled,
@@ -958,7 +1031,7 @@ export function ServerSettingsModal({
   const channels = channelsQuery.data?.items ?? [];
   const membersById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members]);
   const rolesById = useMemo(() => new Map(roles.map((role) => [role.id, role])), [roles]);
-  const ownerUserId = settingsQuery.data?.ownership.ownerUserId ?? '';
+  const ownerUserId = settingsQuery.data?.ownership?.ownerUserId ?? '';
   const owner = ownerUserId ? membersById.get(ownerUserId) : undefined;
   const transferCandidates = members.filter((member) => member.id !== ownerUserId);
   const selectedTransferTarget = selectedOwnerId ? membersById.get(selectedOwnerId) : undefined;
@@ -1773,8 +1846,6 @@ export function ServerSettingsModal({
     return (
       <div className="settings-panel-grid">
         <section className="settings-panel wide">
-          <div className="settings-banner-preview" style={draft.server.bannerUrl ? { backgroundImage: `url(${draft.server.bannerUrl})` } : undefined}>
-          </div>
           <div className="settings-brand-row">
             <div className="settings-icon-preview">
               {draft.server.iconUrl ? <img src={draft.server.iconUrl} alt="" /> : draft.server.name.charAt(0).toUpperCase()}
@@ -1851,11 +1922,18 @@ export function ServerSettingsModal({
       summary: string,
     ) => {
       const defaultColor = DEFAULT_APPEARANCE_COLORS[field];
+      const isAutomaticColor = !draft.appearance[field];
       const color = draft.appearance[field] || defaultColor;
       const rgb = hexToRgbColor(color) ?? hexToRgbColor(defaultColor)!;
       const hsv = rgbToHsvColor(rgb);
       const hueColor = rgbToHexColor(hsvToRgbColor({ h: hsv.h, s: 1, v: 1 }));
-      const pickerOpen = openAppearanceColorPicker === field;
+      const pickerOpen = openAppearanceColorPicker === field && !isAutomaticColor;
+      const autoPreviewBackground =
+        field === 'panelColor'
+          ? 'rgb(var(--side-panel-surface-rgb))'
+          : field === 'ownMessageColor'
+            ? 'rgb(var(--own-message-surface-rgb))'
+            : 'rgb(var(--other-message-surface-rgb))';
       const pickerStyle = {
         '--panel-picker-hue': hueColor,
         '--panel-picker-x': `${hsv.s * 100}%`,
@@ -1883,6 +1961,24 @@ export function ServerSettingsModal({
           [channel]: clampNumber(parsed, 0, 255),
         }));
       };
+      const setAppearanceColorMode = (mode: 'auto' | 'custom') => {
+        if (mode === 'auto') {
+          setOpenAppearanceColorPicker(null);
+          setAppearanceColorText((current) => ({
+            ...current,
+            [field]: '',
+          }));
+          updateLookAppearanceColor(field, '');
+          return;
+        }
+
+        const normalized = normalizePanelColorValue(appearanceColorText[field]) ?? defaultColor;
+        setAppearanceColorText((current) => ({
+          ...current,
+          [field]: normalized,
+        }));
+        updateLookAppearanceColor(field, normalized);
+      };
 
       return (
         <div className="settings-panel-color-card">
@@ -1896,21 +1992,43 @@ export function ServerSettingsModal({
               type="button"
               aria-label={title}
               aria-expanded={pickerOpen}
+              disabled={isAutomaticColor}
+              title={isAutomaticColor ? 'Switch to Custom to pick a color' : undefined}
               onClick={() => setOpenAppearanceColorPicker((current) => (current === field ? null : field))}
             >
-              <span className="settings-panel-color-preview" style={{ backgroundColor: color }} />
-              <span>{color}</span>
+              <span
+                className={`settings-panel-color-preview ${isAutomaticColor ? 'auto' : ''}`}
+                style={{ backgroundColor: isAutomaticColor ? autoPreviewBackground : color }}
+              />
+              <span>{isAutomaticColor ? 'Auto' : color}</span>
+            </button>
+          </div>
+          <div className="settings-segmented settings-panel-color-mode" role="group" aria-label={`${title} color mode`}>
+            <button
+              type="button"
+              className={isAutomaticColor ? 'active' : ''}
+              onClick={() => setAppearanceColorMode('auto')}
+            >
+              Auto
+            </button>
+            <button
+              type="button"
+              className={!isAutomaticColor ? 'active' : ''}
+              onClick={() => setAppearanceColorMode('custom')}
+            >
+              Custom
             </button>
           </div>
           <div className="settings-panel-color-controls">
             <input
               className="settings-panel-color-hex"
-              value={appearanceColorText[field]}
+              value={isAutomaticColor ? 'auto' : appearanceColorText[field]}
               inputMode="text"
               maxLength={7}
               spellCheck={false}
               aria-label={`${title} hex value`}
-              placeholder={defaultColor}
+              placeholder={isAutomaticColor ? 'auto' : defaultColor}
+              disabled={isAutomaticColor}
               onChange={(event) => handleAppearanceColorTextChange(field, event.target.value)}
             />
             <button
@@ -1925,7 +2043,7 @@ export function ServerSettingsModal({
                 updateLookAppearanceColor(field, '');
               }}
             >
-              Default
+              Auto
             </button>
           </div>
           {pickerOpen && (
@@ -2468,6 +2586,14 @@ export function ServerSettingsModal({
     if (!draft) {
       return <div className="settings-empty-inline">Loading config...</div>;
     }
+    const updateScreenShare = (patch: Partial<SettingsDraft['rtc']['screenShare']>) => {
+      updateDraft('rtc', {
+        screenShare: {
+          ...draft.rtc.screenShare,
+          ...patch,
+        },
+      });
+    };
     return (
       <div className="settings-panel-grid">
         <section className="settings-panel">
@@ -2486,7 +2612,7 @@ export function ServerSettingsModal({
           <label>{renderFieldLabel('Client ID')}<input value={draft.auth.atprotoClientId} onChange={(event) => updateDraft('auth', { atprotoClientId: event.target.value })} /></label>
           <label>{renderFieldLabel('Redirect URI')}<input value={draft.auth.redirectUri} onChange={(event) => updateDraft('auth', { redirectUri: event.target.value })} /></label>
           <label>{renderFieldLabel('Scope')}<input value={draft.auth.scope} onChange={(event) => updateDraft('auth', { scope: event.target.value })} /></label>
-          <label>{renderFieldLabel('Cookie secret')}<input type="password" value={draft.auth.cookieSecret} placeholder={settingsQuery.data?.secrets.cookieSecretConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('auth', { cookieSecret: event.target.value })} /></label>
+          <label>{renderFieldLabel('Cookie secret')}<input type="password" value={draft.auth.cookieSecret} placeholder={settingsQuery.data?.secrets?.cookieSecretConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('auth', { cookieSecret: event.target.value })} /></label>
           <label className="settings-check-row padded"><input type="checkbox" checked={draft.auth.allowDevLogin} onChange={(event) => updateDraft('auth', { allowDevLogin: event.target.checked })} /><span>Allow dev login</span></label>
         </section>
         <section className="settings-panel">
@@ -2494,7 +2620,17 @@ export function ServerSettingsModal({
           <label>{renderFieldLabel('SQLite path', 'storage.sqlitePath')}<input value={draft.storage.sqlitePath} onChange={(event) => updateDraft('storage', { sqlitePath: event.target.value })} /></label>
           <label>{renderFieldLabel('Upload dir', 'storage.uploadDir')}<input value={draft.storage.uploadDir} onChange={(event) => updateDraft('storage', { uploadDir: event.target.value })} /></label>
           <label>{renderFieldLabel('Media backend', 'storage.mediaBackend')}<select value={draft.storage.mediaBackend} onChange={(event) => updateDraft('storage', { mediaBackend: event.target.value as MediaBackend })}><option value="local">Local</option><option value="s3">S3</option></select></label>
-          <label>{renderFieldLabel('Max attachment bytes')}<input type="number" value={draft.media.maxAttachmentBytes} onChange={(event) => updateDraft('media', { maxAttachmentBytes: Number(event.target.value) })} /></label>
+          <label>
+            {renderFieldLabel('Attachment limit (MB)')}
+            <input
+              type="number"
+              min="1"
+              max={MAX_ATTACHMENT_MIB}
+              step="1"
+              value={bytesToMib(draft.media.maxAttachmentBytes)}
+              onChange={(event) => updateDraft('media', { maxAttachmentBytes: mibToBytes(Number(event.target.value)) })}
+            />
+          </label>
           <label>{renderFieldLabel('Allowed MIME prefixes')}<textarea value={draft.media.allowedMimePrefixesText} onChange={(event) => updateDraft('media', { allowedMimePrefixesText: event.target.value })} /></label>
           <label>{renderFieldLabel('GIF service')}<select value={draft.media.gifProvider} onChange={(event) => {
             const gifProvider = event.target.value as GifProvider;
@@ -2504,9 +2640,9 @@ export function ServerSettingsModal({
             });
           }}><option value="klipy">Klipy</option><option value="giphy">Giphy</option></select></label>
           <label>{renderFieldLabel('GIF backup service')}<select value={draft.media.gifFallbackProvider} onChange={(event) => updateDraft('media', { gifFallbackProvider: event.target.value as GifFallbackProvider })}><option value="none">None</option><option value="klipy" disabled={draft.media.gifProvider === 'klipy'}>Klipy</option><option value="giphy" disabled={draft.media.gifProvider === 'giphy'}>Giphy</option></select></label>
-          <label>{renderFieldLabel('Klipy API key')}<input type="password" value={draft.media.klipyApiKey} placeholder={settingsQuery.data?.secrets.klipyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { klipyApiKey: event.target.value, clearKlipyApiKey: false })} /></label>
+          <label>{renderFieldLabel('Klipy API key')}<input type="password" value={draft.media.klipyApiKey} placeholder={settingsQuery.data?.secrets?.klipyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { klipyApiKey: event.target.value, clearKlipyApiKey: false })} /></label>
           <label className="settings-check-row padded"><input type="checkbox" checked={draft.media.clearKlipyApiKey} onChange={(event) => updateDraft('media', { clearKlipyApiKey: event.target.checked, klipyApiKey: '' })} /><span>Clear Klipy API key on save</span></label>
-          <label>{renderFieldLabel('Giphy API key')}<input type="password" value={draft.media.giphyApiKey} placeholder={settingsQuery.data?.secrets.giphyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { giphyApiKey: event.target.value, clearGiphyApiKey: false })} /></label>
+          <label>{renderFieldLabel('Giphy API key')}<input type="password" value={draft.media.giphyApiKey} placeholder={settingsQuery.data?.secrets?.giphyApiKeyConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('media', { giphyApiKey: event.target.value, clearGiphyApiKey: false })} /></label>
           <label className="settings-check-row padded"><input type="checkbox" checked={draft.media.clearGiphyApiKey} onChange={(event) => updateDraft('media', { clearGiphyApiKey: event.target.checked, giphyApiKey: '' })} /><span>Clear Giphy API key on save</span></label>
         </section>
         <section className="settings-panel">
@@ -2526,8 +2662,35 @@ export function ServerSettingsModal({
             <label>{renderFieldLabel('Session timeout ms', 'rtc.sessionTimeoutMs')}<input type="number" min="5000" value={draft.rtc.sessionTimeoutMs} onChange={(event) => updateDraft('rtc', { sessionTimeoutMs: Number(event.target.value) })} /></label>
           </div>
           <label>{renderFieldLabel('TURN URLs', 'rtc.turnUrls')}<textarea value={draft.rtc.turnUrlsText} onChange={(event) => updateDraft('rtc', { turnUrlsText: event.target.value })} /></label>
-          <label>{renderFieldLabel('TURN username', 'rtc.turnUsername')}<input value={draft.rtc.turnUsername} placeholder={settingsQuery.data?.secrets.turnUsernameConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnUsername: event.target.value, clearTurnUsername: false })} /></label>
-          <label>{renderFieldLabel('TURN credential', 'rtc.turnCredential')}<input type="password" value={draft.rtc.turnCredential} placeholder={settingsQuery.data?.secrets.turnCredentialConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnCredential: event.target.value, clearTurnCredential: false })} /></label>
+          <label>{renderFieldLabel('TURN username', 'rtc.turnUsername')}<input value={draft.rtc.turnUsername} placeholder={settingsQuery.data?.secrets?.turnUsernameConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnUsername: event.target.value, clearTurnUsername: false })} /></label>
+          <label>{renderFieldLabel('TURN credential', 'rtc.turnCredential')}<input type="password" value={draft.rtc.turnCredential} placeholder={settingsQuery.data?.secrets?.turnCredentialConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('rtc', { turnCredential: event.target.value, clearTurnCredential: false })} /></label>
+        </section>
+        <section className="settings-panel">
+          <h3>Screen Share</h3>
+          <label className="settings-check-row padded">
+            <input
+              type="checkbox"
+              checked={draft.rtc.screenShare.enabled}
+              onChange={(event) => updateScreenShare({ enabled: event.target.checked })}
+            />
+            <span>Enabled</span>
+          </label>
+          <label>
+            {renderFieldLabel('Transport')}
+            <select
+              value={draft.rtc.screenShare.transportMode}
+              onChange={(event) => updateScreenShare({ transportMode: event.target.value as ScreenShareTransportMode })}
+            >
+              <option value="p2p_mesh">Peer mesh</option>
+            </select>
+          </label>
+          <div className="settings-two-col">
+            <label>{renderFieldLabel('Max width')}<input type="number" min="320" max="3840" step="16" value={draft.rtc.screenShare.maxWidth} onChange={(event) => updateScreenShare({ maxWidth: Number(event.target.value) })} /></label>
+            <label>{renderFieldLabel('Max height')}<input type="number" min="240" max="2160" step="16" value={draft.rtc.screenShare.maxHeight} onChange={(event) => updateScreenShare({ maxHeight: Number(event.target.value) })} /></label>
+            <label>{renderFieldLabel('Max FPS')}<input type="number" min="1" max="60" value={draft.rtc.screenShare.maxFrameRate} onChange={(event) => updateScreenShare({ maxFrameRate: Number(event.target.value) })} /></label>
+            <label>{renderFieldLabel('Max bitrate kbps')}<input type="number" min="150" max="20000" step="50" value={draft.rtc.screenShare.maxBitrateKbps} onChange={(event) => updateScreenShare({ maxBitrateKbps: Number(event.target.value) })} /></label>
+            <label>{renderFieldLabel('Channel share limit')}<input type="number" min="1" max="8" value={draft.rtc.screenShare.maxActiveSharesPerChannel} onChange={(event) => updateScreenShare({ maxActiveSharesPerChannel: Number(event.target.value) })} /></label>
+          </div>
         </section>
         <section className="settings-panel">
           <h3>Observability</h3>
