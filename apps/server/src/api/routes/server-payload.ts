@@ -7,6 +7,7 @@ function buildPanelAsset(app: FastifyInstance, attachmentId: string | undefined)
     ? {
         attachmentId: attachment.id,
         url: `/api/v1/media/attachments/${attachment.id}`,
+        mimeType: attachment.mimeType,
       }
     : {};
 }

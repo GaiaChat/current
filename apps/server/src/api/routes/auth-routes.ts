@@ -62,6 +62,7 @@ const LauncherAuthProfileSchema = z.object({
   handle: z.string().trim().min(1).max(256).optional(),
   displayName: z.string().trim().min(1).max(120).optional(),
   avatar: z.string().trim().url().max(2048).optional(),
+  banner: z.string().trim().url().max(2048).optional(),
   description: z.string().trim().max(512).optional(),
 });
 
@@ -151,10 +152,7 @@ function broadcastMemberJoined(
   });
 }
 
-function getSignedInAccessUser(
-  request: FastifyRequest,
-  reply: FastifyReply,
-): CurrentUser | null {
+function getSignedInAccessUser(request: FastifyRequest, reply: FastifyReply): CurrentUser | null {
   if (!request.currentUser) {
     reply.code(401).send({
       error: {
@@ -177,9 +175,9 @@ function getSignedInAccessUser(
 
 function readLanHandoff(app: FastifyInstance, handoffId: string): LanHandoffState | null {
   const key = `${LAN_HANDOFF_PREFIX}${handoffId}`;
-  const row = app.appContext.db
-    .prepare('SELECT value FROM settings WHERE key = ?')
-    .get(key) as { value?: string } | undefined;
+  const row = app.appContext.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+    | { value?: string }
+    | undefined;
   if (!row?.value) {
     return null;
   }
@@ -438,7 +436,8 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
 
 function resolveOriginatingRequestIp(request: FastifyRequest): string {
   const normalizedRemote = normalizeIpAddress(request.ip);
-  const trustProxySetting = (request.server as { initialConfig?: { trustProxy?: unknown } }).initialConfig?.trustProxy;
+  const trustProxySetting = (request.server as { initialConfig?: { trustProxy?: unknown } })
+    .initialConfig?.trustProxy;
   const trustProxyEnabled = Boolean(trustProxySetting);
   const trustProxyViaLoopback = isLoopbackIpAddress(normalizedRemote);
   const shouldTrustForwardedHeaders = trustProxyEnabled || trustProxyViaLoopback;
@@ -864,10 +863,7 @@ async function verifyLauncherAccessTokenWithResource(input: {
   if (resourceUrl.search || resourceUrl.hash) {
     throw new Error('Launcher token resource proof URL must not include query data.');
   }
-  if (
-    input.expectedAudience &&
-    !sameIssuer(resourceUrl.origin, input.expectedAudience)
-  ) {
+  if (input.expectedAudience && !sameIssuer(resourceUrl.origin, input.expectedAudience)) {
     throw new Error('Launcher token resource proof audience mismatch.');
   }
   const expectedPdsOrigin = await resolveAtprotoPdsOrigin(input.expectedDid);
@@ -1407,11 +1403,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
               }`,
             )
           : new URL(result.returnTo);
-        if (!isSafeAuthRedirectTarget({
-          target: redirectTo,
-          requestHost: request.headers.host,
-          config: app.appContext.serverConfig.get(),
-        })) {
+        if (
+          !isSafeAuthRedirectTarget({
+            target: redirectTo,
+            requestHost: request.headers.host,
+            config: app.appContext.serverConfig.get(),
+          })
+        ) {
           response.redirect('/');
           return;
         }
@@ -1466,11 +1464,16 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       registrationMode,
     });
 
-    if (access.state === 'approved' && status.serverId && !userHasServerRole(app.appContext.repos, { serverId: status.serverId, user })) {
-      user = grantDefaultMemberRole(app.appContext.repos, {
-        serverId: status.serverId,
-        userId: user.id,
-      }).user ?? user;
+    if (
+      access.state === 'approved' &&
+      status.serverId &&
+      !userHasServerRole(app.appContext.repos, { serverId: status.serverId, user })
+    ) {
+      user =
+        grantDefaultMemberRole(app.appContext.repos, {
+          serverId: status.serverId,
+          userId: user.id,
+        }).user ?? user;
       access = resolveServerAccess(app.appContext.repos, {
         serverId: status.serverId,
         user,
@@ -1614,6 +1617,44 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  app.post('/auth/invite/validate', async (request, reply) => {
+    const parsed = InviteClaimSchema.safeParse(request.body ?? {});
+    const status = app.appContext.setup.status();
+    const registrationMode = app.appContext.serverConfig.get().server.registrationMode;
+    if (!parsed.success || !status.serverId) {
+      reply.code(400).send({ error: 'Invalid request.' });
+      return;
+    }
+
+    if (registrationMode !== 'invite_only') {
+      reply.code(409).send({
+        error: {
+          code: 'INVITE_VALIDATION_DISABLED',
+          message: 'Invite codes are not required for this server.',
+        },
+      });
+      return;
+    }
+
+    const validation = app.appContext.invites.validate(parsed.data.code);
+    if (!validation.valid || !validation.invite || validation.invite.serverId !== status.serverId) {
+      reply.code(400).send({
+        error: {
+          code: 'INVALID_INVITE',
+          message: validation.reason ?? 'Invite code is invalid.',
+        },
+      });
+      return;
+    }
+
+    reply.send({
+      invite: {
+        code: validation.invite.code,
+      },
+      server: buildPublicServerPayload(app),
+    });
+  });
+
   app.post('/auth/invite/claim', async (request, reply) => {
     const user = getSignedInAccessUser(request, reply);
     if (!user) {
@@ -1750,6 +1791,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         handle: parsed.data.profile.handle,
         displayName: parsed.data.profile.displayName,
         avatar: parsed.data.profile.avatar,
+        banner: parsed.data.profile.banner,
         bio: parsed.data.profile.description,
       });
       broadcastMemberJoined(app, result);

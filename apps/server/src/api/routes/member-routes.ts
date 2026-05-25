@@ -14,6 +14,10 @@ const MembersAfterCursorSchema = z.object({
   id: z.string().min(1),
 });
 
+const MemberParamsSchema = z.object({
+  userId: z.string().trim().min(1).max(128),
+});
+
 export async function registerMemberRoutes(app: FastifyInstance): Promise<void> {
   app.get('/members', { preHandler: [requireAuth] }, async (request, reply) => {
     const query = MembersQuerySchema.safeParse(request.query);
@@ -42,4 +46,37 @@ export async function registerMemberRoutes(app: FastifyInstance): Promise<void> 
       after: after?.success ? after.data : undefined,
     });
   });
+
+  app.post(
+    '/members/:userId/profile/refresh',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      const params = MemberParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        reply.code(400).send({ error: params.error.flatten() });
+        return;
+      }
+
+      const member = app.appContext.repos.users.findById(params.data.userId);
+      if (!member) {
+        reply.code(404).send({
+          error: {
+            code: 'MEMBER_NOT_FOUND',
+            message: 'Member was not found.',
+          },
+        });
+        return;
+      }
+
+      if (!member.did.startsWith('did:plc:') && !member.did.startsWith('did:web:')) {
+        return member;
+      }
+
+      try {
+        return await app.appContext.auth.hydrateProfile(member);
+      } catch {
+        return app.appContext.repos.users.findById(member.id) ?? member;
+      }
+    },
+  );
 }

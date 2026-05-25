@@ -20,7 +20,7 @@
 
 - **API service (Fastify)**
   - Handles auth/session, setup wizard, channels/messages, moderation, voice endpoints
-  - Auth mode is config-driven: `auth.mode=atproto` (ATProto OAuth, with Bluesky as the default provider) or `auth.mode=lan` (local screen-name login)
+  - Auth mode is config-driven: `auth.mode=atproto` (ATProto OAuth with handle/DID discovery) or `auth.mode=lan` (local screen-name login)
   - Provides admin settings endpoints for GIF provider config, ownership transfer, moderation feed, and shared-IP insights
   - Exposes discoverable OAuth metadata at `/api/v1/auth/client-metadata.json` for HTTPS domain deployments
   - Supports LAN OAuth handoff flow for loopback-mode ATProto auth (`/auth/lan/handoffs/*`) with configurable host link base URL

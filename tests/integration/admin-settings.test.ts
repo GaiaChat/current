@@ -9,6 +9,28 @@ function tableCount(db: DatabaseSync, table: string): number {
   return row.count;
 }
 
+function buildMultipartFileUpload(input: {
+  fileName: string;
+  mimeType: string;
+  bytes: Buffer;
+}): { headers: Record<string, string>; payload: Buffer } {
+  const boundary = '----current-admin-settings-upload-boundary';
+  return {
+    headers: {
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+    payload: Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="file"; filename="${input.fileName}"\r\n` +
+          `Content-Type: ${input.mimeType}\r\n\r\n`,
+      ),
+      input.bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]),
+  };
+}
+
 describe('admin settings and insights', () => {
   it('requires MANAGE_SERVER and supports settings, ownership transfer, and shared-ip insights', async () => {
     const { app, db, context, close } = await createTestApp();
@@ -75,7 +97,7 @@ describe('admin settings and insights', () => {
       'Server Admin',
       '#30b4ff',
       90,
-      JSON.stringify(['MANAGE_SERVER']),
+      JSON.stringify(['MANAGE_SERVER', 'ATTACH_FILES']),
       nowIso(),
     );
 
@@ -174,11 +196,23 @@ describe('admin settings and insights', () => {
         media: {
           gifProvider: 'giphy',
           gifFallbackProvider: 'klipy',
+          maxAttachmentBytes: 9 * 1024 * 1024,
         },
         appearance: {
           backgroundAttachmentId: messagesBackground.id,
           ownMessageColor: '#6effbf',
           otherMessageColor: '#30b4ff',
+        },
+        rtc: {
+          screenShare: {
+            enabled: true,
+            transportMode: 'p2p_mesh',
+            maxWidth: 1920,
+            maxHeight: 1080,
+            maxFrameRate: 24,
+            maxBitrateKbps: 1800,
+            maxActiveSharesPerChannel: 1,
+          },
         },
       },
     });
@@ -187,6 +221,7 @@ describe('admin settings and insights', () => {
       media: {
         gifProvider: string;
         gifFallbackProvider: string;
+        maxAttachmentBytes: number;
         klipyApiKey?: string;
         giphyApiKey?: string;
         klipyApiKeyConfigured: boolean;
@@ -199,12 +234,22 @@ describe('admin settings and insights', () => {
           ownMessageColor: string;
           otherMessageColor: string;
         };
+        rtc: {
+          screenShare: {
+            maxWidth: number;
+            maxHeight: number;
+            maxFrameRate: number;
+            maxBitrateKbps: number;
+            maxActiveSharesPerChannel: number;
+          };
+        };
       };
       auth: { mode: string };
       restartRequiredFields: string[];
     };
     expect(patched.media.gifProvider).toBe('giphy');
     expect(patched.media.gifFallbackProvider).toBe('klipy');
+    expect(patched.media.maxAttachmentBytes).toBe(9 * 1024 * 1024);
     expect(patched.media.klipyApiKey).toBeUndefined();
     expect(patched.media.giphyApiKey).toBeUndefined();
     expect(patched.media.klipyApiKeyConfigured).toBe(true);
@@ -213,16 +258,73 @@ describe('admin settings and insights', () => {
     expect(context.serverConfig.get().media.giphyApiKey).toBe('giphy-test-key');
     expect(context.serverConfig.get().media.gifProvider).toBe('giphy');
     expect(context.serverConfig.get().media.gifFallbackProvider).toBe('klipy');
+    expect(context.serverConfig.get().media.maxAttachmentBytes).toBe(9 * 1024 * 1024);
     expect(patched.server.name).toBe('Renamed Admin Server');
     expect(patched.server.registrationMode).toBe('manual_approval');
     expect(patched.server.iconAttachmentId).toBe(icon.id);
     expect(patched.config.appearance.background.attachmentId).toBe(messagesBackground.id);
     expect(patched.config.appearance.ownMessageColor).toBe('#6effbf');
     expect(patched.config.appearance.otherMessageColor).toBe('#30b4ff');
+    expect(patched.config.rtc.screenShare.maxWidth).toBe(1920);
+    expect(patched.config.rtc.screenShare.maxHeight).toBe(1080);
+    expect(patched.config.rtc.screenShare.maxFrameRate).toBe(24);
+    expect(patched.config.rtc.screenShare.maxBitrateKbps).toBe(1800);
+    expect(patched.config.rtc.screenShare.maxActiveSharesPerChannel).toBe(1);
     expect(patched.auth.mode).toBe('lan');
     expect(patched.restartRequiredFields).toContain('server.host');
     expect(context.serverConfig.get().appearance.backgroundAttachmentId).toBe(messagesBackground.id);
     expect(context.serverConfig.get().appearance.ownMessageColor).toBe('#6effbf');
+
+    const underRaisedLimit = buildMultipartFileUpload({
+      fileName: 'raised-limit.bin',
+      mimeType: 'application/octet-stream',
+      bytes: Buffer.alloc(8 * 1024 * 1024 + 1, 1),
+    });
+    const raisedLimitUpload = await app.inject({
+      method: 'POST',
+      url: '/api/v1/media/attachments',
+      cookies: {
+        current_session: 'admin_session',
+      },
+      headers: underRaisedLimit.headers,
+      payload: underRaisedLimit.payload,
+    });
+    expect(raisedLimitUpload.statusCode).toBe(201);
+    expect((raisedLimitUpload.json() as { byteSize: number }).byteSize).toBe(8 * 1024 * 1024 + 1);
+
+    const lowerUploadLimit = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/admin/settings',
+      cookies: {
+        current_session: 'admin_session',
+      },
+      payload: {
+        media: {
+          maxAttachmentBytes: 1024 * 1024,
+        },
+      },
+    });
+    expect(lowerUploadLimit.statusCode).toBe(200);
+    expect(context.serverConfig.get().media.maxAttachmentBytes).toBe(1024 * 1024);
+
+    const overLoweredLimit = buildMultipartFileUpload({
+      fileName: 'over-lowered-limit.bin',
+      mimeType: 'application/octet-stream',
+      bytes: Buffer.alloc(1024 * 1024 + 1, 2),
+    });
+    const loweredLimitUpload = await app.inject({
+      method: 'POST',
+      url: '/api/v1/media/attachments',
+      cookies: {
+        current_session: 'admin_session',
+      },
+      headers: overLoweredLimit.headers,
+      payload: overLoweredLimit.payload,
+    });
+    expect(loweredLimitUpload.statusCode).toBe(400);
+    expect((loweredLimitUpload.json() as { error: { message: string } }).error.message).toBe(
+      'Attachment exceeds configured max size.',
+    );
     expect(context.serverConfig.get().appearance.otherMessageColor).toBe('#30b4ff');
 
     const transferOwnership = await app.inject({

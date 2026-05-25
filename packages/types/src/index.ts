@@ -26,6 +26,7 @@ export interface CurrentUser {
   handle: string;
   displayName: string;
   avatarUrl?: string;
+  bannerUrl?: string;
   bio?: string;
   roleIds: string[];
   createdAt: ISODate;
@@ -34,6 +35,7 @@ export interface CurrentUser {
 export interface PanelBackgroundAppearance {
   attachmentId?: string;
   url?: string;
+  mimeType?: string;
 }
 
 export interface ServerAppearance {
@@ -71,6 +73,7 @@ export interface ServerAccessRequestUser {
   handle: string;
   displayName: string;
   avatarUrl?: string;
+  bannerUrl?: string;
   bio?: string;
 }
 
@@ -100,7 +103,24 @@ export interface MessageAuthor {
   handle: string;
   displayName: string;
   avatarUrl?: string;
+  bannerUrl?: string;
   bio?: string;
+}
+
+export type MessageModerationReason =
+  | 'viewer_blocked_author'
+  | 'author_blocked_viewer'
+  | 'mutual_block';
+
+export interface MessageModeration {
+  source: 'atproto';
+  hidden: boolean;
+  reason: MessageModerationReason;
+  disclaimer: string;
+  viewerBlockedAuthor: boolean;
+  authorBlockedViewer: boolean;
+  viewerBlockedAuthorByList?: boolean;
+  authorBlockedViewerByList?: boolean;
 }
 
 export type ChannelType = 'category' | 'text' | 'voice' | 'dm';
@@ -139,6 +159,7 @@ export interface Message {
   updatedAt?: ISODate;
   deletedAt?: ISODate;
   reactions?: MessageReaction[];
+  moderation?: MessageModeration;
 }
 
 export interface MessageReaction {
@@ -238,6 +259,43 @@ export interface VoiceProducer {
   kind: 'audio';
   paused: boolean;
 }
+
+export type VoiceScreenShareTransportMode = 'p2p_mesh';
+
+export interface VoiceScreenShareConstraints {
+  maxWidth: number;
+  maxHeight: number;
+  maxFrameRate: number;
+  maxBitrateKbps: number;
+}
+
+export interface VoiceScreenShareSettings extends VoiceScreenShareConstraints {
+  enabled: boolean;
+  transportMode: VoiceScreenShareTransportMode;
+  maxActiveSharesPerChannel: number;
+}
+
+export interface VoiceScreenShare {
+  id: string;
+  userId: string;
+  channelId: string;
+  transportMode: VoiceScreenShareTransportMode;
+  constraints: VoiceScreenShareConstraints;
+  startedAt: ISODate;
+}
+
+export type VoiceScreenShareSignal =
+  | {
+      type: 'viewer-ready' | 'viewer-left';
+    }
+  | {
+      type: 'offer' | 'answer';
+      description: RTCSessionDescriptionInit;
+    }
+  | {
+      type: 'ice';
+      candidate: RTCIceCandidateInit;
+    };
 
 export interface AckEnvelope<TType extends string, TPayload> {
   id: string;

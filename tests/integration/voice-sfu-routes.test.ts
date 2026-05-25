@@ -147,6 +147,71 @@ describe('voice SFU signaling routes', () => {
     const memberJoin = memberJoinResponse.json() as { sessionId: string; producers: Array<{ id: string }> };
     expect(memberJoin.producers.map((item) => item.id)).toContain(producer.id);
 
+    const screenShareStartResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/voice/channels/${voiceChannel?.id}/screen-shares`,
+      cookies: {
+        current_session: 'voice_admin_session',
+      },
+      payload: {
+        sessionId: adminJoin.sessionId,
+      },
+    });
+    expect(screenShareStartResponse.statusCode).toBe(200);
+    const screenShareStart = screenShareStartResponse.json() as {
+      share: { id: string; userId: string; channelId: string; transportMode: string; constraints: { maxWidth: number; maxHeight: number } };
+      viewers: string[];
+    };
+    expect(screenShareStart.share.userId).toBe(admin.id);
+    expect(screenShareStart.share.channelId).toBe(voiceChannel?.id);
+    expect(screenShareStart.share.transportMode).toBe('p2p_mesh');
+    expect(screenShareStart.share.constraints.maxWidth).toBe(1280);
+    expect(screenShareStart.share.constraints.maxHeight).toBe(720);
+    expect(screenShareStart.viewers).toContain('usr_voice_member');
+
+    const screenShareListResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/voice/channels/${voiceChannel?.id}/screen-shares`,
+      cookies: {
+        current_session: 'voice_member_session',
+      },
+    });
+    expect(screenShareListResponse.statusCode).toBe(200);
+    const screenShareList = screenShareListResponse.json() as {
+      shares: Array<{ id: string }>;
+      settings: { transportMode: string };
+    };
+    expect(screenShareList.shares.map((share) => share.id)).toContain(screenShareStart.share.id);
+    expect(screenShareList.settings.transportMode).toBe('p2p_mesh');
+
+    const screenShareSignalResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/voice/screen-shares/${screenShareStart.share.id}/signal`,
+      cookies: {
+        current_session: 'voice_member_session',
+      },
+      payload: {
+        sessionId: memberJoin.sessionId,
+        targetUserId: admin.id,
+        signal: {
+          type: 'viewer-ready',
+        },
+      },
+    });
+    expect(screenShareSignalResponse.statusCode).toBe(204);
+
+    const screenShareStopResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/voice/screen-shares/${screenShareStart.share.id}/stop`,
+      cookies: {
+        current_session: 'voice_admin_session',
+      },
+      payload: {
+        sessionId: adminJoin.sessionId,
+      },
+    });
+    expect(screenShareStopResponse.statusCode).toBe(204);
+
     const recvTransportResponse = await app.inject({
       method: 'POST',
       url: `/api/v1/voice/channels/${voiceChannel?.id}/transports`,

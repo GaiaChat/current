@@ -490,6 +490,55 @@ describe('server access requests', () => {
     expect(inviteResponse.statusCode).toBe(201);
     const invite = inviteResponse.json() as { code: string };
 
+    const setupStatus = await app.inject({
+      method: 'GET',
+      url: '/api/v1/setup/status',
+    });
+    expect(setupStatus.statusCode).toBe(200);
+    expect(setupStatus.json()).toMatchObject({
+      configured: true,
+      server: {
+        name: 'Invite Access Server',
+        registrationMode: 'invite_only',
+      },
+    });
+
+    const preflight = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/invite/validate',
+      payload: {
+        code: invite.code,
+      },
+    });
+    expect(preflight.statusCode).toBe(200);
+    expect(preflight.json()).toMatchObject({
+      invite: {
+        code: invite.code,
+      },
+      server: {
+        name: 'Invite Access Server',
+        registrationMode: 'invite_only',
+      },
+    });
+    const preflightInvite = db
+      .prepare('SELECT used_count FROM invites WHERE code = ?')
+      .get(invite.code) as { used_count: number } | undefined;
+    expect(preflightInvite?.used_count).toBe(0);
+
+    const invalidPreflight = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/invite/validate',
+      payload: {
+        code: 'missing-code',
+      },
+    });
+    expect(invalidPreflight.statusCode).toBe(400);
+    expect(invalidPreflight.json()).toMatchObject({
+      error: {
+        code: 'INVALID_INVITE',
+      },
+    });
+
     insertUserSession(db, {
       userId: 'usr_invited',
       sessionToken: 'invited_session',

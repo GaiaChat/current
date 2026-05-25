@@ -22,6 +22,7 @@ interface OAuthProfileResponse {
   handle?: string;
   displayName?: string;
   avatar?: string;
+  banner?: string;
   description?: string;
 }
 
@@ -87,9 +88,7 @@ export class AuthService {
     };
   }
 
-  async handleOAuthCallback(
-    params: URLSearchParams,
-  ): Promise<OAuthCallbackResult> {
+  async handleOAuthCallback(params: URLSearchParams): Promise<OAuthCallbackResult> {
     const client = await this.getOAuthClient();
     const { session, state } = await client.callback(params);
     const profile = await this.fetchProfile(session.did);
@@ -101,15 +100,19 @@ export class AuthService {
     const handle = this.normalizeResolvedHandle(profile.handle) ?? existing?.handle ?? did;
     const displayName = profile.displayName ?? existing?.displayName ?? handle;
     const avatarUrl = profile.avatar ?? existing?.avatarUrl;
+    const bannerUrl = profile.banner ?? existing?.bannerUrl;
     const bio = profile.description ?? existing?.bio;
 
-    const user = this.ensureDefaultMemberRole(this.repos.users.upsertByDid({
-      did,
-      handle,
-      displayName,
-      avatarUrl,
-      bio,
-    }));
+    const user = this.ensureDefaultMemberRole(
+      this.repos.users.upsertByDid({
+        did,
+        handle,
+        displayName,
+        avatarUrl,
+        bannerUrl,
+        bio,
+      }),
+    );
 
     const sessionToken = id('sess');
     this.repos.users.setSession(sessionToken, user.id, addHours(24));
@@ -128,6 +131,7 @@ export class AuthService {
     handle?: string;
     displayName?: string;
     avatar?: string;
+    banner?: string;
     bio?: string;
   }): Promise<AuthLoginResult> {
     const profile = await this.fetchProfile(input.did);
@@ -141,16 +145,23 @@ export class AuthService {
     const displayName =
       profile.displayName ?? input.displayName?.trim() ?? existing?.displayName ?? handle;
     const avatarUrl = profile.avatar ?? input.avatar ?? existing?.avatarUrl;
+    const bannerUrl = profile.banner ?? input.banner ?? existing?.bannerUrl;
     const inputBio = input.bio?.trim();
-    const bio = profile.description ?? (inputBio && inputBio.length > 0 ? inputBio : undefined) ?? existing?.bio;
+    const bio =
+      profile.description ??
+      (inputBio && inputBio.length > 0 ? inputBio : undefined) ??
+      existing?.bio;
 
-    const user = this.ensureDefaultMemberRole(this.repos.users.upsertByDid({
-      did,
-      handle,
-      displayName,
-      avatarUrl,
-      bio,
-    }));
+    const user = this.ensureDefaultMemberRole(
+      this.repos.users.upsertByDid({
+        did,
+        handle,
+        displayName,
+        avatarUrl,
+        bannerUrl,
+        bio,
+      }),
+    );
 
     const sessionToken = id('sess');
     this.repos.users.setSession(sessionToken, user.id, addHours(24));
@@ -164,15 +175,19 @@ export class AuthService {
     const handle = this.normalizeResolvedHandle(profile.handle) ?? user.handle;
     const displayName = profile.displayName ?? user.displayName ?? handle;
     const avatarUrl = profile.avatar ?? user.avatarUrl;
+    const bannerUrl = profile.banner ?? user.bannerUrl;
     const bio = profile.description ?? user.bio;
 
-    return this.ensureDefaultMemberRole(this.repos.users.upsertByDid({
-      did,
-      handle,
-      displayName,
-      avatarUrl,
-      bio,
-    }));
+    return this.ensureDefaultMemberRole(
+      this.repos.users.upsertByDid({
+        did,
+        handle,
+        displayName,
+        avatarUrl,
+        bannerUrl,
+        bio,
+      }),
+    );
   }
 
   devLogin(input?: { handle?: string; displayName?: string }): AuthLoginResult {
@@ -183,11 +198,13 @@ export class AuthService {
     const did = `did:current:dev:${didSuffix}`;
     const existing = this.repos.users.findByDid(did);
 
-    const user = this.ensureDefaultMemberRole(this.repos.users.upsertByDid({
-      did,
-      handle,
-      displayName,
-    }));
+    const user = this.ensureDefaultMemberRole(
+      this.repos.users.upsertByDid({
+        did,
+        handle,
+        displayName,
+      }),
+    );
 
     const sessionToken = id('sess');
     this.repos.users.setSession(sessionToken, user.id, addHours(24));
@@ -218,11 +235,13 @@ export class AuthService {
     const did = `did:current:lan:${didSuffix}`;
     const existing = this.repos.users.findByDid(did);
 
-    const user = this.ensureDefaultMemberRole(this.repos.users.upsertByDid({
-      did,
-      handle,
-      displayName: screenName,
-    }));
+    const user = this.ensureDefaultMemberRole(
+      this.repos.users.upsertByDid({
+        did,
+        handle,
+        displayName: screenName,
+      }),
+    );
 
     const sessionToken = id('sess');
     this.repos.users.setSession(sessionToken, user.id, addHours(24));
@@ -253,10 +272,12 @@ export class AuthService {
       return user;
     }
 
-    return grantDefaultMemberRole(this.repos, {
-      serverId: server.id,
-      userId: user.id,
-    }).user ?? user;
+    return (
+      grantDefaultMemberRole(this.repos, {
+        serverId: server.id,
+        userId: user.id,
+      }).user ?? user
+    );
   }
 
   logout(sessionToken?: string): void {
@@ -322,7 +343,9 @@ export class AuthService {
       });
     }
 
-    const derivedDiscoverableClientId = this.deriveDiscoverableClientIdFromPublicUrl(config.server.publicUrl);
+    const derivedDiscoverableClientId = this.deriveDiscoverableClientIdFromPublicUrl(
+      config.server.publicUrl,
+    );
     if (derivedDiscoverableClientId) {
       return this.buildDiscoverableClientMetadata({
         clientId: derivedDiscoverableClientId,
@@ -503,9 +526,12 @@ export class AuthService {
       throw new Error('Handle/domain must look like a domain (for example: alice.example.com).');
     }
 
-    const validHandle = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(handle);
+    const validHandle =
+      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(handle);
     if (!validHandle) {
-      throw new Error('Handle contains invalid characters. Use letters, numbers, dots, and hyphens.');
+      throw new Error(
+        'Handle contains invalid characters. Use letters, numbers, dots, and hyphens.',
+      );
     }
 
     return normalizedHandle;
@@ -519,7 +545,10 @@ export class AuthService {
     const ipVersion = isIP(hostname);
     if (ipVersion === 4) {
       const parts = hostname.split('.').map((part) => Number(part));
-      if (parts.length !== 4 || parts.some((value) => Number.isNaN(value) || value < 0 || value > 255)) {
+      if (
+        parts.length !== 4 ||
+        parts.some((value) => Number.isNaN(value) || value < 0 || value > 255)
+      ) {
         return false;
       }
 
@@ -594,14 +623,22 @@ export class AuthService {
             ? payload.displayName.trim()
             : undefined;
         const avatar =
-          typeof payload.avatar === 'string' && payload.avatar.trim().length > 0 ? payload.avatar : undefined;
-        const description = typeof payload.description === 'string' ? payload.description.trim() : '';
+          typeof payload.avatar === 'string' && payload.avatar.trim().length > 0
+            ? payload.avatar
+            : undefined;
+        const banner =
+          typeof payload.banner === 'string' && payload.banner.trim().length > 0
+            ? payload.banner
+            : undefined;
+        const description =
+          typeof payload.description === 'string' ? payload.description.trim() : '';
 
         return {
           did: payload.did ?? actor,
           handle,
           displayName,
           avatar,
+          banner,
           description,
         };
       } catch {

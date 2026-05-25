@@ -3,6 +3,26 @@ import { createTestApp } from '../helpers/test-app.js';
 import { addHours, nowIso } from '../../apps/server/src/utils/time.js';
 
 describe('setup owner assignment', () => {
+  it('reports the port hosts need to forward during first-run setup', async () => {
+    const { app, close } = await createTestApp();
+
+    const setupStatusResponse = await app.inject({
+      method: 'GET',
+      url: '/api/v1/setup/status',
+    });
+
+    expect(setupStatusResponse.statusCode).toBe(200);
+    expect(setupStatusResponse.json()).toMatchObject({
+      configured: false,
+      network: {
+        port: 6414,
+        publicUrl: 'http://localhost:8080',
+      },
+    });
+
+    await close();
+  });
+
   it('rejects unauthenticated first-run setup from remote clients', async () => {
     const { app, close } = await createTestApp();
 

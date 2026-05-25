@@ -9,6 +9,8 @@ export const DEFAULT_ATPROTO_OAUTH_SCOPE = [
   'identity:handle',
   'rpc?aud=*&lxm=com.atproto.server.getSession',
 ].join(' ');
+export const DEFAULT_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_CONFIGURABLE_ATTACHMENT_BYTES = 1024 * 1024 * 1024;
 
 const PanelColorSchema = z
   .string()
@@ -62,7 +64,7 @@ const CurrentConfigSchema = z.object({
       .optional(),
   }),
   media: z.object({
-    maxAttachmentBytes: z.number().int().positive().default(10 * 1024 * 1024),
+    maxAttachmentBytes: z.number().int().positive().max(MAX_CONFIGURABLE_ATTACHMENT_BYTES).default(DEFAULT_MAX_ATTACHMENT_BYTES),
     allowedMimePrefixes: z.array(z.string()).default(['image/', 'video/', 'audio/', 'application/pdf']),
     gifProvider: z.enum(['klipy', 'giphy']).default('klipy'),
     gifFallbackProvider: z.enum(['none', 'klipy', 'giphy']).default('none'),
@@ -97,6 +99,25 @@ const CurrentConfigSchema = z.object({
     turnUrls: z.array(z.string()).default([]),
     turnUsername: z.string().optional(),
     turnCredential: z.string().optional(),
+    screenShare: z
+      .object({
+        enabled: z.boolean().default(true),
+        transportMode: z.enum(['p2p_mesh']).default('p2p_mesh'),
+        maxWidth: z.number().int().min(320).max(3840).default(1280),
+        maxHeight: z.number().int().min(240).max(2160).default(720),
+        maxFrameRate: z.number().int().min(1).max(60).default(30),
+        maxBitrateKbps: z.number().int().min(150).max(20_000).default(2500),
+        maxActiveSharesPerChannel: z.number().int().min(1).max(8).default(2),
+      })
+      .default({
+        enabled: true,
+        transportMode: 'p2p_mesh',
+        maxWidth: 1280,
+        maxHeight: 720,
+        maxFrameRate: 30,
+        maxBitrateKbps: 2500,
+        maxActiveSharesPerChannel: 2,
+      }),
   }),
   observability: z.object({
     metricsEnabled: z.boolean().default(true),
@@ -251,7 +272,7 @@ export function createDefaultConfig(partial: DeepPartial<CurrentConfig> = {}): C
       s3: partial.storage?.s3,
     },
     media: {
-      maxAttachmentBytes: partialMedia?.maxAttachmentBytes ?? 10 * 1024 * 1024,
+      maxAttachmentBytes: partialMedia?.maxAttachmentBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
       allowedMimePrefixes: partialMedia?.allowedMimePrefixes ?? ['image/', 'video/', 'audio/', 'application/pdf'],
       gifProvider: partialMedia?.gifProvider ?? 'klipy',
       gifFallbackProvider: partialMedia?.gifFallbackProvider ?? 'none',
@@ -279,6 +300,15 @@ export function createDefaultConfig(partial: DeepPartial<CurrentConfig> = {}): C
       turnUrls: partial.rtc?.turnUrls ?? [],
       turnUsername: partial.rtc?.turnUsername,
       turnCredential: partial.rtc?.turnCredential,
+      screenShare: {
+        enabled: partial.rtc?.screenShare?.enabled ?? true,
+        transportMode: partial.rtc?.screenShare?.transportMode ?? 'p2p_mesh',
+        maxWidth: partial.rtc?.screenShare?.maxWidth ?? 1280,
+        maxHeight: partial.rtc?.screenShare?.maxHeight ?? 720,
+        maxFrameRate: partial.rtc?.screenShare?.maxFrameRate ?? 30,
+        maxBitrateKbps: partial.rtc?.screenShare?.maxBitrateKbps ?? 2500,
+        maxActiveSharesPerChannel: partial.rtc?.screenShare?.maxActiveSharesPerChannel ?? 2,
+      },
     },
     observability: {
       metricsEnabled: partial.observability?.metricsEnabled ?? true,

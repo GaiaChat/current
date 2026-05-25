@@ -4,11 +4,12 @@ import { Buffer } from 'node:buffer';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { GatewayEnvelope } from '@current/protocol';
 import { GatewayEvents } from '@current/protocol';
-import type { CurrentUser, UserPresence, UserPresenceStatus } from '@current/types';
+import type { CurrentUser, Message, UserPresence, UserPresenceStatus } from '@current/types';
 import type { CurrentConfig } from '@current/config';
 import type { RepositoryBag } from '../db/repositories/index.js';
 import type { AuthService } from '../auth/auth-service.js';
 import type { MetricsService } from '../metrics/metrics-service.js';
+import type { AtprotoBlockService } from '../services/atproto-block-service.js';
 import { resolveServerAccess } from '../services/access-control.js';
 import { id } from '../utils/id.js';
 import { nowIso } from '../utils/time.js';
@@ -48,6 +49,7 @@ export class GatewayService {
     private readonly repos: RepositoryBag,
     private readonly auth: AuthService,
     private readonly metrics: MetricsService,
+    private readonly atprotoBlocks: AtprotoBlockService,
     private readonly getConfig: () => CurrentConfig,
   ) {}
 
@@ -110,7 +112,7 @@ export class GatewayService {
       });
 
       if (lastSeq > 0) {
-        this.replaySince(socket, lastSeq);
+        void this.replaySince(socket, lastSeq).catch(() => undefined);
       }
 
       if (!hadConnectedClients) {
@@ -173,22 +175,7 @@ export class GatewayService {
       seq,
       sentAt: nowIso(),
     };
-    const serialized = JSON.stringify(envelope);
-
-    for (const [socket, session] of this.clients) {
-      const visiblePayload = this.visiblePayloadForUser(session.user, type, payload);
-      if (visiblePayload === null) {
-        continue;
-      }
-      if (visiblePayload === payload) {
-        this.sendSerialized(socket, serialized);
-      } else {
-        this.send(socket, {
-          ...envelope,
-          payload: visiblePayload,
-        });
-      }
-    }
+    void this.deliverEnvelope(envelope, payload).catch(() => undefined);
 
     return seq;
   }
@@ -200,21 +187,19 @@ export class GatewayService {
       payload,
       sentAt: nowIso(),
     };
-    const serialized = JSON.stringify(envelope);
+    void this.deliverEnvelope(envelope, payload).catch(() => undefined);
+  }
 
-    for (const [socket, session] of this.clients) {
-      const visiblePayload = this.visiblePayloadForUser(session.user, type, payload);
-      if (visiblePayload === null) {
-        continue;
-      }
-      if (visiblePayload === payload) {
-        this.sendSerialized(socket, serialized);
-      } else {
-        this.send(socket, {
-          ...envelope,
-          payload: visiblePayload,
-        });
-      }
+  sendEphemeralToUser<T>(userId: string, type: string, payload: T): void {
+    const envelope: GatewayEnvelope = {
+      id: id('evt'),
+      type,
+      payload,
+      sentAt: nowIso(),
+    };
+    const serialized = JSON.stringify(envelope);
+    for (const socket of this.socketsByUserId.get(userId) ?? []) {
+      this.sendSerialized(socket, serialized);
     }
   }
 
@@ -435,7 +420,7 @@ export class GatewayService {
     return null;
   }
 
-  private replaySince(socket: WebSocket, seq: number): void {
+  private async replaySince(socket: WebSocket, seq: number): Promise<void> {
     const session = this.clients.get(socket);
     if (!session) {
       return;
@@ -443,7 +428,7 @@ export class GatewayService {
 
     const records = this.repos.gatewayEvents.listSince(seq);
     for (const record of records) {
-      const visiblePayload = this.visiblePayloadForUser(session.user, record.type, record.payload);
+      const visiblePayload = await this.visiblePayloadForUser(session.user, record.type, record.payload);
       if (visiblePayload === null) {
         continue;
       }
@@ -457,12 +442,37 @@ export class GatewayService {
     }
   }
 
-  private visiblePayloadForUser(user: CurrentUser, _type: string, payload: unknown): unknown | null {
+  private async deliverEnvelope<T>(envelope: GatewayEnvelope, payload: T): Promise<void> {
+    const clients = [...this.clients];
+    if (clients.length === 0) {
+      return;
+    }
+
+    await this.prefetchPayloadForUsers(payload, clients.map(([, session]) => session.user));
+    const serialized = JSON.stringify(envelope);
+
+    await Promise.all(clients.map(async ([socket, session]) => {
+      const visiblePayload = await this.visiblePayloadForUser(session.user, envelope.type, payload);
+      if (visiblePayload === null) {
+        return;
+      }
+      if (visiblePayload === payload) {
+        this.sendSerialized(socket, serialized);
+      } else {
+        this.send(socket, {
+          ...envelope,
+          payload: visiblePayload,
+        });
+      }
+    }));
+  }
+
+  private async visiblePayloadForUser(user: CurrentUser, _type: string, payload: unknown): Promise<unknown | null> {
     if (!this.isRecord(payload)) {
       return payload;
     }
 
-    const transformed = this.filterChannelListForUser(user, payload);
+    let transformed = this.filterChannelListForUser(user, payload);
     const channelIds = this.extractPayloadChannelIds(transformed);
     for (const channelId of channelIds) {
       if (!this.userCanViewChannel(user, channelId)) {
@@ -470,7 +480,37 @@ export class GatewayService {
       }
     }
 
+    transformed = await this.filterMessageForUser(user, transformed);
     return transformed;
+  }
+
+  private async prefetchPayloadForUsers(payload: unknown, users: CurrentUser[]): Promise<void> {
+    const message = this.extractPayloadMessage(payload);
+    if (!message) {
+      return;
+    }
+
+    await this.atprotoBlocks.prefetchMessageForViewers(message, users);
+  }
+
+  private async filterMessageForUser(
+    user: CurrentUser,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const message = this.extractPayloadMessage(payload);
+    if (!message) {
+      return payload;
+    }
+
+    const visibleMessage = await this.atprotoBlocks.applyMessageBlocksForViewer(user, message);
+    if (visibleMessage === message) {
+      return payload;
+    }
+
+    return {
+      ...payload,
+      message: visibleMessage,
+    };
   }
 
   private filterChannelListForUser(user: CurrentUser, payload: Record<string, unknown>): Record<string, unknown> {
@@ -516,7 +556,25 @@ export class GatewayService {
       this.addString(channelIds, producer.channelId);
     }
 
+    const screenShare = this.getRecord(payload.screenShare);
+    if (screenShare) {
+      this.addString(channelIds, screenShare.channelId);
+    }
+
     return [...channelIds];
+  }
+
+  private extractPayloadMessage(payload: unknown): Message | null {
+    if (!this.isRecord(payload)) {
+      return null;
+    }
+
+    const message = this.getRecord(payload.message);
+    if (!message || !this.getString(message.id) || !this.getString(message.authorId)) {
+      return null;
+    }
+
+    return message as unknown as Message;
   }
 
   private userCanViewChannel(user: CurrentUser, channelId: string): boolean {

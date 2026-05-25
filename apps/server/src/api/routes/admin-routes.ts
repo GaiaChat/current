@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import type { CurrentConfig, DeepPartial } from '@current/config';
+import { MAX_CONFIGURABLE_ATTACHMENT_BYTES, type CurrentConfig, type DeepPartial } from '@current/config';
 import { GatewayEvents } from '@current/protocol';
 import type { Permission, RegistrationMode, Role } from '@current/types';
 import { requireAuth } from '../auth-guard.js';
@@ -59,7 +59,15 @@ const HostOnlyAdminSettingsFieldPaths = [
   'auth.profileEndpoint',
   'auth.cookieSecret',
   'auth.allowDevLogin',
-  'rtc',
+  'rtc.listenIp',
+  'rtc.announcedIp',
+  'rtc.udpMinPort',
+  'rtc.udpMaxPort',
+  'rtc.workerCount',
+  'rtc.sessionTimeoutMs',
+  'rtc.turnUrls',
+  'rtc.turnUsername',
+  'rtc.turnCredential',
   'observability',
 ];
 
@@ -123,7 +131,7 @@ const AdminSettingsPatchSchema = z
       .optional(),
     media: z
       .object({
-        maxAttachmentBytes: z.number().int().positive().max(1024 * 1024 * 1024).optional(),
+        maxAttachmentBytes: z.number().int().positive().max(MAX_CONFIGURABLE_ATTACHMENT_BYTES).optional(),
         allowedMimePrefixes: z.array(z.string().trim().min(1).max(128)).max(64).optional(),
         gifProvider: z.enum(['klipy', 'giphy']).optional(),
         gifFallbackProvider: z.enum(['none', 'klipy', 'giphy']).optional(),
@@ -161,6 +169,17 @@ const AdminSettingsPatchSchema = z
         clearTurnUsername: z.boolean().optional(),
         turnCredential: z.string().max(4096).optional(),
         clearTurnCredential: z.boolean().optional(),
+        screenShare: z
+          .object({
+            enabled: z.boolean().optional(),
+            transportMode: z.enum(['p2p_mesh']).optional(),
+            maxWidth: z.number().int().min(320).max(3840).optional(),
+            maxHeight: z.number().int().min(240).max(2160).optional(),
+            maxFrameRate: z.number().int().min(1).max(60).optional(),
+            maxBitrateKbps: z.number().int().min(150).max(20_000).optional(),
+            maxActiveSharesPerChannel: z.number().int().min(1).max(8).optional(),
+          })
+          .optional(),
       })
       .optional(),
     observability: z
@@ -484,6 +503,7 @@ function buildRedactedConfig(app: FastifyInstance, config: CurrentConfig) {
       turnUrls: config.rtc.turnUrls,
       turnUsernameConfigured: Boolean(config.rtc.turnUsername?.trim()),
       turnCredentialConfigured: Boolean(config.rtc.turnCredential?.trim()),
+      screenShare: config.rtc.screenShare,
     },
     observability: config.observability,
   };
@@ -517,6 +537,7 @@ function buildSettingsPayload(app: FastifyInstance, restartRequiredFields: strin
       lanRedirectBaseUrl: config.auth.lanRedirectBaseUrl,
     },
     media: {
+      maxAttachmentBytes: config.media.maxAttachmentBytes,
       gifProvider: config.media.gifProvider,
       gifFallbackProvider: config.media.gifFallbackProvider,
       klipyApiKeyConfigured: config.media.klipyApiKey.trim().length > 0,
@@ -682,6 +703,7 @@ function buildConfigPatch(
       turnCredential: body.rtc.clearTurnCredential
         ? ''
         : body.rtc.turnCredential ?? current.rtc.turnCredential,
+      screenShare: body.rtc.screenShare,
     };
   }
 

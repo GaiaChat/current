@@ -29,7 +29,7 @@ Pagination defaults and caps:
 ## Auth
 
 - `POST /auth/lan-login` (LAN mode only; screen-name sign-in without Bluesky)
-- `GET /auth/oauth/start?handle=you.bsky.social&returnTo=http://localhost:8080`
+- `GET /auth/oauth/start?handle=alice.bsky.social&returnTo=http://localhost:8080` (handle or `did:plc`/`did:web`)
 - `GET /auth/oauth/callback?...` (processes OAuth response and sets `current_session` cookie)
 - `GET /auth/client-metadata.json` (discoverable OAuth metadata when `server.publicUrl` is HTTPS domain)
 - `GET /auth/lan/handoffs/:handoffId/start` (host-machine OAuth step for LAN loopback mode)

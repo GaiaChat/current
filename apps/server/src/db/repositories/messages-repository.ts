@@ -28,6 +28,7 @@ interface MessageRow {
   author_handle?: string | null;
   author_display_name?: string | null;
   author_avatar_url?: string | null;
+  author_banner_url?: string | null;
   author_bio?: string | null;
 }
 
@@ -65,6 +66,7 @@ const MESSAGE_SELECT_COLUMNS = `
   users.handle AS author_handle,
   users.display_name AS author_display_name,
   users.avatar_url AS author_avatar_url,
+  users.banner_url AS author_banner_url,
   users.bio AS author_bio
 `;
 
@@ -307,7 +309,10 @@ export class MessagesRepository extends BaseRepository {
     return row ? this.toMessage(row) : null;
   }
 
-  edit(messageId: string, input: { content: string; encryptedContent?: EncryptedMessageContent }): Message | null {
+  edit(
+    messageId: string,
+    input: { content: string; encryptedContent?: EncryptedMessageContent },
+  ): Message | null {
     this.db
       .prepare(
         `
@@ -340,7 +345,10 @@ export class MessagesRepository extends BaseRepository {
     return this.findById(messageId);
   }
 
-  toggleReaction(input: { messageId: string; userId: string; emoji: string }): { message: Message | null; added: boolean } {
+  toggleReaction(input: { messageId: string; userId: string; emoji: string }): {
+    message: Message | null;
+    added: boolean;
+  } {
     const existing = this.db
       .prepare('SELECT id FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?')
       .get(input.messageId, input.userId, input.emoji) as { id: string } | undefined;
@@ -370,7 +378,9 @@ export class MessagesRepository extends BaseRepository {
 
   findAttachmentById(attachmentId: string): Attachment | null {
     const row = this.db
-      .prepare('SELECT id, message_id, owner_user_id, file_name, mime_type, byte_size, path FROM attachments WHERE id = ?')
+      .prepare(
+        'SELECT id, message_id, owner_user_id, file_name, mime_type, byte_size, path FROM attachments WHERE id = ?',
+      )
       .get(attachmentId) as AttachmentRow | undefined;
     if (!row) {
       return null;
@@ -464,7 +474,9 @@ export class MessagesRepository extends BaseRepository {
 
   private loadAttachments(messageId: string): Attachment[] {
     const rows = this.db
-      .prepare('SELECT id, message_id, owner_user_id, file_name, mime_type, byte_size, path FROM attachments WHERE message_id = ?')
+      .prepare(
+        'SELECT id, message_id, owner_user_id, file_name, mime_type, byte_size, path FROM attachments WHERE message_id = ?',
+      )
       .all(messageId) as unknown as AttachmentRow[];
 
     return rows.map((row) => this.toAttachment(row));
@@ -583,15 +595,15 @@ export class MessagesRepository extends BaseRepository {
     const reactions = this.loadReactionsForMessages(messageIds);
 
     return rows.map((row) =>
-      this.toMessage(
-        row,
-        attachments.get(row.id) ?? [],
-        reactions.get(row.id) ?? [],
-      ),
+      this.toMessage(row, attachments.get(row.id) ?? [], reactions.get(row.id) ?? []),
     );
   }
 
-  private toMessage(row: MessageRow, attachments?: Attachment[], reactions?: MessageReaction[]): Message {
+  private toMessage(
+    row: MessageRow,
+    attachments?: Attachment[],
+    reactions?: MessageReaction[],
+  ): Message {
     return {
       id: row.id,
       channelId: row.channel_id,
@@ -620,6 +632,7 @@ export class MessagesRepository extends BaseRepository {
       handle: row.author_handle ?? row.author_did,
       displayName: row.author_display_name ?? row.author_handle ?? row.author_did,
       avatarUrl: row.author_avatar_url ?? undefined,
+      bannerUrl: row.author_banner_url ?? undefined,
       bio: row.author_bio ?? undefined,
     };
   }

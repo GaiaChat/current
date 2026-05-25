@@ -11,6 +11,7 @@ interface UserRow {
   handle: string;
   display_name: string;
   avatar_url: string | null;
+  banner_url: string | null;
   bio: string | null;
   selected_presence_status: string;
   created_at: string;
@@ -34,6 +35,7 @@ export class UsersRepository extends BaseRepository {
     handle: string;
     displayName: string;
     avatarUrl?: string;
+    bannerUrl?: string;
     bio?: string;
   }): CurrentUser {
     const existing = this.db.prepare('SELECT id FROM users WHERE did = ?').get(input.did) as
@@ -46,17 +48,28 @@ export class UsersRepository extends BaseRepository {
     this.db
       .prepare(
         `
-      INSERT INTO users (id, did, handle, display_name, avatar_url, bio, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, did, handle, display_name, avatar_url, banner_url, bio, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(did) DO UPDATE SET
         handle = excluded.handle,
         display_name = excluded.display_name,
         avatar_url = excluded.avatar_url,
+        banner_url = excluded.banner_url,
         bio = excluded.bio,
         updated_at = excluded.updated_at
     `,
       )
-      .run(userId, input.did, input.handle, input.displayName, input.avatarUrl ?? null, input.bio ?? null, ts, ts);
+      .run(
+        userId,
+        input.did,
+        input.handle,
+        input.displayName,
+        input.avatarUrl ?? null,
+        input.bannerUrl ?? null,
+        input.bio ?? null,
+        ts,
+        ts,
+      );
 
     return this.findById(userId)!;
   }
@@ -85,6 +98,7 @@ export class UsersRepository extends BaseRepository {
       handle: row.handle,
       displayName: row.display_name,
       avatarUrl: row.avatar_url ?? undefined,
+      bannerUrl: row.banner_url ?? undefined,
       bio: row.bio ?? undefined,
       roleIds: roleRows.map((entry) => entry.role_id),
       createdAt: row.created_at,
@@ -130,8 +144,12 @@ export class UsersRepository extends BaseRepository {
   }
 
   list(): CurrentUser[] {
-    const rows = this.db.prepare('SELECT id FROM users ORDER BY created_at ASC').all() as unknown as Array<{ id: string }>;
-    return rows.map((row) => this.findById(row.id)).filter((row): row is CurrentUser => Boolean(row));
+    const rows = this.db
+      .prepare('SELECT id FROM users ORDER BY created_at ASC')
+      .all() as unknown as Array<{ id: string }>;
+    return rows
+      .map((row) => this.findById(row.id))
+      .filter((row): row is CurrentUser => Boolean(row));
   }
 
   listMembersPage(input: {
@@ -203,7 +221,9 @@ export class UsersRepository extends BaseRepository {
     this.db.exec('BEGIN');
     try {
       this.db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(userId);
-      const insert = this.db.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)');
+      const insert = this.db.prepare(
+        'INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)',
+      );
       for (const roleId of roleIds) {
         insert.run(userId, roleId);
       }
@@ -328,6 +348,7 @@ export class UsersRepository extends BaseRepository {
           users.handle,
           users.display_name,
           users.avatar_url,
+          users.banner_url,
           users.bio,
           users.selected_presence_status,
           users.created_at
@@ -400,6 +421,7 @@ export class UsersRepository extends BaseRepository {
       handle: row.handle,
       displayName: row.display_name,
       avatarUrl: row.avatar_url ?? undefined,
+      bannerUrl: row.banner_url ?? undefined,
       bio: row.bio ?? undefined,
       roleIds,
       createdAt: row.created_at,

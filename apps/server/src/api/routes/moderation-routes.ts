@@ -216,6 +216,13 @@ export async function registerModerationRoutes(app: FastifyInstance): Promise<vo
     });
 
     if (action.type === 'kick' || action.type === 'ban') {
+      for (const share of app.appContext.screenShare.stopUserShares(action.targetUserId)) {
+        app.appContext.gateway.broadcastEphemeral(GatewayEvents.VOICE_SCREEN_SHARE_STOPPED, {
+          shareId: share.id,
+          channelId: share.channelId,
+          userId: share.userId,
+        });
+      }
       const closedVoice = await app.appContext.voice.leaveChannel(action.targetUserId);
       for (const producer of closedVoice?.producers ?? []) {
         app.appContext.gateway.broadcastEphemeral(GatewayEvents.VOICE_PRODUCER_REMOVED, {

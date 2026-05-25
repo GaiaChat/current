@@ -11,6 +11,15 @@ export interface SetupStatus {
   configured: boolean;
   serverId?: string;
   authMode: 'atproto' | 'lan';
+  network: {
+    port: number;
+    publicUrl: string;
+  };
+  server?: {
+    id: string;
+    name: string;
+    registrationMode: RegistrationMode;
+  };
 }
 
 export interface BootstrapInput {
@@ -57,11 +66,23 @@ export class SetupService {
   status(): SetupStatus {
     const configured = Boolean(this.repos.settings.get<boolean>('setup_complete'));
     const server = this.repos.servers.getPrimaryServer();
+    const config = this.serverConfig.get();
 
     return {
       configured,
       serverId: server?.id,
-      authMode: this.serverConfig.get().auth.mode,
+      authMode: config.auth.mode,
+      network: {
+        port: config.server.port,
+        publicUrl: config.server.publicUrl,
+      },
+      server: server
+        ? {
+            id: server.id,
+            name: config.server.name || server.name,
+            registrationMode: config.server.registrationMode ?? server.registrationMode,
+          }
+        : undefined,
     };
   }
 

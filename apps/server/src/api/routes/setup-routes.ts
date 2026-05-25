@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { MAX_CONFIGURABLE_ATTACHMENT_BYTES } from '@current/config';
 
 const BootstrapSchema = z.object({
   serverName: z.string().min(2),
@@ -14,7 +15,7 @@ const BootstrapSchema = z.object({
       gifFallbackProvider: z.enum(['none', 'klipy', 'giphy']).optional(),
       klipyApiKey: z.string().max(512).optional(),
       giphyApiKey: z.string().max(512).optional(),
-      maxAttachmentBytes: z.number().int().positive().max(1024 * 1024 * 1024).optional(),
+      maxAttachmentBytes: z.number().int().positive().max(MAX_CONFIGURABLE_ATTACHMENT_BYTES).optional(),
       allowedMimePrefixes: z.array(z.string().trim().min(1).max(128)).max(64).optional(),
     })
     .optional(),

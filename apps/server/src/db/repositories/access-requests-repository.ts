@@ -23,6 +23,7 @@ interface AccessRequestRow {
   user_handle?: string | null;
   user_display_name?: string | null;
   user_avatar_url?: string | null;
+  user_banner_url?: string | null;
   user_bio?: string | null;
 }
 
@@ -47,10 +48,9 @@ export class AccessRequestsRepository extends BaseRepository {
   }
 
   get(serverId: string, userId: string): ServerAccessRequest | null {
-    const row = this.baseSelect('WHERE access_requests.server_id = ? AND access_requests.user_id = ?').get(
-      serverId,
-      userId,
-    ) as AccessRequestRow | undefined;
+    const row = this.baseSelect(
+      'WHERE access_requests.server_id = ? AND access_requests.user_id = ?',
+    ).get(serverId, userId) as AccessRequestRow | undefined;
     return row ? this.toRequest(row) : null;
   }
 
@@ -60,7 +60,9 @@ export class AccessRequestsRepository extends BaseRepository {
       : 'WHERE access_requests.server_id = ?';
     const rows = (status
       ? this.baseSelect(`${where} ORDER BY access_requests.requested_at DESC`).all(serverId, status)
-      : this.baseSelect(`${where} ORDER BY access_requests.requested_at DESC`).all(serverId)) as unknown as AccessRequestRow[];
+      : this.baseSelect(`${where} ORDER BY access_requests.requested_at DESC`).all(
+          serverId,
+        )) as unknown as AccessRequestRow[];
     return rows.map((row) => this.toRequest(row));
   }
 
@@ -107,7 +109,15 @@ export class AccessRequestsRepository extends BaseRepository {
         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
       `,
       )
-      .run(id('acc_req'), input.serverId, input.userId, input.notificationsEnabled ? 1 : 0, input.source, ts, ts);
+      .run(
+        id('acc_req'),
+        input.serverId,
+        input.userId,
+        input.notificationsEnabled ? 1 : 0,
+        input.source,
+        ts,
+        ts,
+      );
 
     return this.get(input.serverId, input.userId)!;
   }
@@ -142,7 +152,8 @@ export class AccessRequestsRepository extends BaseRepository {
     const ts = nowIso();
     const reviewedBy = input.reviewedBy ?? null;
     const reviewedAt = input.status === 'pending' ? null : ts;
-    const notificationsEnabled = input.notificationsEnabled ?? existing?.notificationsEnabled ?? false;
+    const notificationsEnabled =
+      input.notificationsEnabled ?? existing?.notificationsEnabled ?? false;
 
     if (existing) {
       this.db
@@ -219,6 +230,7 @@ export class AccessRequestsRepository extends BaseRepository {
         users.handle AS user_handle,
         users.display_name AS user_display_name,
         users.avatar_url AS user_avatar_url,
+        users.banner_url AS user_banner_url,
         users.bio AS user_bio
       FROM access_requests
       LEFT JOIN users ON users.id = access_requests.user_id
@@ -245,6 +257,7 @@ export class AccessRequestsRepository extends BaseRepository {
             handle: row.user_handle ?? row.user_did,
             displayName: row.user_display_name ?? row.user_handle ?? row.user_did,
             avatarUrl: row.user_avatar_url ?? undefined,
+            bannerUrl: row.user_banner_url ?? undefined,
             bio: row.user_bio ?? undefined,
           }
         : undefined,

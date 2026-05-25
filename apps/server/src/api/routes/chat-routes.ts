@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { GatewayEvents } from '@current/protocol';
 import type { Channel, CurrentUser, Message } from '@current/types';
@@ -20,6 +20,7 @@ import { nowIso } from '../../utils/time.js';
 
 const ChannelTypeSchema = z.enum(['category', 'text', 'voice', 'dm']);
 const ChannelPositionSchema = z.number().int().min(0).max(1_000_000_000);
+type MultipartUploadFile = NonNullable<Awaited<ReturnType<FastifyRequest['file']>>>;
 
 const ChannelCreateSchema = z.object({
   name: z.string().min(1),
@@ -100,6 +101,36 @@ function normalizeNotificationMentionHandles(handles: string[] | undefined): str
     }
   }
   return [...normalized];
+}
+
+function toUploadBufferChunk(chunk: unknown): Buffer {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk;
+  }
+  if (typeof chunk === 'string') {
+    return Buffer.from(chunk);
+  }
+  if (chunk instanceof Uint8Array) {
+    return Buffer.from(chunk);
+  }
+  throw new Error('Unsupported upload stream chunk.');
+}
+
+async function readAttachmentUploadBytes(file: MultipartUploadFile, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of file.file) {
+    const buffer = toUploadBufferChunk(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBytes) {
+      file.file.destroy();
+      throw new Error('Attachment exceeds configured max size.');
+    }
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks, totalBytes);
 }
 
 function extractNotificationMentionHandles(content: string): string[] {
@@ -225,6 +256,30 @@ function visibleMessageChannelIds(app: FastifyInstance, input: { serverId: strin
     .map((channel) => channel.id);
 }
 
+async function applyMessageBlocksForViewer(
+  app: FastifyInstance,
+  viewer: CurrentUser,
+  message: Message,
+): Promise<Message> {
+  return app.appContext.atprotoBlocks.applyMessageBlocksForViewer(viewer, message);
+}
+
+async function applyMessagesBlocksForViewer(
+  app: FastifyInstance,
+  viewer: CurrentUser,
+  messages: Message[],
+): Promise<Message[]> {
+  return app.appContext.atprotoBlocks.applyMessagesBlocksForViewer(viewer, messages);
+}
+
+async function isMessageHiddenByAtprotoBlock(
+  app: FastifyInstance,
+  viewer: CurrentUser,
+  message: Message,
+): Promise<boolean> {
+  return app.appContext.atprotoBlocks.shouldHideMessageForViewer(viewer, message);
+}
+
 function notificationKindForTarget(input: {
   mentioned: boolean;
   replyToUser: boolean;
@@ -280,7 +335,7 @@ function shouldDeliverNotification(input: {
   return true;
 }
 
-function recordCurrentNotificationEvents(
+async function recordCurrentNotificationEvents(
   app: FastifyInstance,
   input: {
     serverId: string;
@@ -290,7 +345,7 @@ function recordCurrentNotificationEvents(
     mentionHandles: string[];
     replyToUserId?: string;
   },
-): void {
+): Promise<void> {
   const targetedUsers = new Map<
     string,
     {
@@ -337,15 +392,23 @@ function recordCurrentNotificationEvents(
       .map((setting) => [setting.userId, setting]),
   );
 
-  for (const user of app.appContext.repos.users.list()) {
+  const usersWithChannelAccess = app.appContext.repos.users.list().filter((user) => {
     if (user.id === input.message.authorId) {
-      continue;
+      return false;
     }
     if (!canViewChannel(app, {
       serverId: input.serverId,
       channelId: input.channelId,
       user,
     })) {
+      return false;
+    }
+    return true;
+  });
+  await app.appContext.atprotoBlocks.prefetchMessageForViewers(input.message, usersWithChannelAccess);
+
+  for (const user of usersWithChannelAccess) {
+    if (await isMessageHiddenByAtprotoBlock(app, user, input.message)) {
       continue;
     }
 
@@ -811,15 +874,16 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     const hasMore = rows.length > limit;
     const lastScannedSeq = pageRows[pageRows.length - 1]?.seq ?? afterSeq;
 
+    const items = await Promise.all(visibleRows.map(async (row) => ({
+      id: row.eventId,
+      seq: row.seq,
+      kind: row.kind,
+      message: await applyMessageBlocksForViewer(app, currentUser, row.payload.message),
+      notification: row.payload.notification,
+      createdAt: row.createdAt,
+    })));
     return {
-      items: visibleRows.map((row) => ({
-        id: row.eventId,
-        seq: row.seq,
-        kind: row.kind,
-        message: row.payload.message,
-        notification: row.payload.notification,
-        createdAt: row.createdAt,
-      })),
+      items,
       pageInfo: {
         hasMore,
         nextAfterSeq: hasMore ? lastScannedSeq : undefined,
@@ -870,12 +934,16 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const identityMode = app.appContext.serverConfig.get().auth.mode === 'lan' ? 'lan' : 'atproto';
-    return app.appContext.chat.listMessagesPage({
+    const page = app.appContext.chat.listMessagesPage({
       channelId: params.channelId,
       limit: query.data.limit ?? 40,
       before: before?.success ? before.data : undefined,
       identityMode,
     });
+    return {
+      ...page,
+      items: await applyMessagesBlocksForViewer(app, request.currentUser, page.items),
+    };
   });
 
   app.get('/channels/:channelId/messages/search', { preHandler: [requireAuth] }, async (request, reply) => {
@@ -907,14 +975,15 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const identityMode = app.appContext.serverConfig.get().auth.mode === 'lan' ? 'lan' : 'atproto';
+    const items = app.appContext.chat.searchMessages({
+      channelId: params.data.channelId,
+      query: query.data.q,
+      limit: query.data.limit ?? 10,
+      authorId: query.data.from,
+      identityMode,
+    });
     return {
-      items: app.appContext.chat.searchMessages({
-        channelId: params.data.channelId,
-        query: query.data.q,
-        limit: query.data.limit ?? 10,
-        authorId: query.data.from,
-        identityMode,
-      }),
+      items: await applyMessagesBlocksForViewer(app, request.currentUser, items),
     };
   });
 
@@ -957,16 +1026,17 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
           serverId: status.serverId,
           user: request.currentUser,
         });
+    const items = app.appContext.chat.searchMessagesInServer({
+      serverId: status.serverId,
+      query: query.data.q,
+      limit: query.data.limit ?? 10,
+      authorId: query.data.from,
+      channelId: query.data.channelId,
+      channelIds,
+      identityMode,
+    });
     return {
-      items: app.appContext.chat.searchMessagesInServer({
-        serverId: status.serverId,
-        query: query.data.q,
-        limit: query.data.limit ?? 10,
-        authorId: query.data.from,
-        channelId: query.data.channelId,
-        channelIds,
-        identityMode,
-      }),
+      items: await applyMessagesBlocksForViewer(app, request.currentUser, items),
     };
   });
 
@@ -1003,7 +1073,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
 
-    reply.send(message);
+    reply.send(await applyMessageBlocksForViewer(app, request.currentUser, message));
   });
 
   app.post('/channels/:channelId/messages', { preHandler: [requireAuth] }, async (request, reply) => {
@@ -1065,6 +1135,27 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
 
+    const identityMode = app.appContext.serverConfig.get().auth.mode === 'lan' ? 'lan' : 'atproto';
+    const requestedParentMessage = body.data.parentMessageId
+      ? app.appContext.chat.getMessageById({
+          messageId: body.data.parentMessageId,
+          serverId: status.serverId,
+          identityMode,
+        })
+      : null;
+    if (
+      requestedParentMessage &&
+      (await isMessageHiddenByAtprotoBlock(app, request.currentUser, requestedParentMessage))
+    ) {
+      reply.code(409).send({
+        error: {
+          code: 'MESSAGE_BLOCKED',
+          reasons: ['atproto_blocked_reply_parent'],
+        },
+      });
+      return;
+    }
+
     const result = app.appContext.chat.sendMessage({
       serverId: status.serverId,
       channelId: params.data.channelId,
@@ -1090,9 +1181,9 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       ...extractNotificationMentionHandles(body.data.content),
       ...(body.data.notificationMentions ?? []),
     ]);
-    const identityMode = app.appContext.serverConfig.get().auth.mode === 'lan' ? 'lan' : 'atproto';
     const parentMessage = result.message.parentMessageId
-      ? app.appContext.chat.getMessageById({
+      ? requestedParentMessage ??
+        app.appContext.chat.getMessageById({
           messageId: result.message.parentMessageId,
           serverId: status.serverId,
           identityMode,
@@ -1110,7 +1201,7 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       message: result.message,
       ...(notification ? { notification } : {}),
     });
-    recordCurrentNotificationEvents(app, {
+    await recordCurrentNotificationEvents(app, {
       serverId: status.serverId,
       channelId: channel.id,
       gatewaySeq,
@@ -1330,6 +1421,10 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       reply.code(404).send({ error: 'Message not found.' });
       return;
     }
+    if (await isMessageHiddenByAtprotoBlock(app, request.currentUser, existing)) {
+      reply.code(404).send({ error: 'Message not found.' });
+      return;
+    }
 
     if (!hasChannelPermission(app.appContext, {
       serverId: status.serverId,
@@ -1401,14 +1496,27 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
 
-    const file = await request.file();
+    let file: MultipartUploadFile | undefined;
+    try {
+      file = await request.file();
+    } catch (error) {
+      reply.code(400).send({
+        error: {
+          code: 'ATTACHMENT_REJECTED',
+          message: error instanceof Error ? error.message : 'Attachment upload failed.',
+        },
+      });
+      return;
+    }
+
     if (!file) {
       reply.code(400).send({ error: 'No file uploaded.' });
       return;
     }
 
-    const bytes = await file.toBuffer();
     try {
+      const maxAttachmentBytes = app.appContext.serverConfig.get().media.maxAttachmentBytes;
+      const bytes = await readAttachmentUploadBytes(file, maxAttachmentBytes);
       const attachment = app.appContext.chat.saveAttachment({
         fileName: file.filename,
         mimeType: file.mimetype,
@@ -1461,6 +1569,10 @@ export async function registerChatRoutes(app: FastifyInstance): Promise<void> {
         channelId: message.channelId,
         user: request.currentUser,
       })) {
+        reply.code(404).send({ error: 'Attachment not found.' });
+        return;
+      }
+      if (await isMessageHiddenByAtprotoBlock(app, request.currentUser, message)) {
         reply.code(404).send({ error: 'Attachment not found.' });
         return;
       }

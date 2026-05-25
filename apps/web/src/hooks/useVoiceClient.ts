@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Device } from 'mediasoup-client';
 import type { types as mediasoupClientTypes } from 'mediasoup-client';
-import type { VoiceProducer, VoiceState } from '@current/types';
+import type { VoiceProducer, VoiceScreenShare, VoiceScreenShareSettings, VoiceState } from '@current/types';
 import { apiPost, apiPatch } from '../lib/api';
 import type { GatewayEnvelope } from './useGateway';
 
@@ -25,6 +25,8 @@ interface VoiceJoinResponse {
   rtpCapabilities: mediasoupClientTypes.RtpCapabilities;
   iceServers: RTCIceServer[];
   producers: VoiceProducer[];
+  screenShare: VoiceScreenShareSettings;
+  screenShares: VoiceScreenShare[];
 }
 
 interface VoiceTransportInfo {
@@ -89,6 +91,11 @@ interface VoiceSessionRef {
   sessionId: string;
   channelId: string;
   iceServers: RTCIceServer[];
+}
+
+export interface VoiceSessionInfo extends VoiceSessionRef {
+  screenShare: VoiceScreenShareSettings;
+  screenShares: VoiceScreenShare[];
 }
 
 type MediasoupDevice = Device;
@@ -247,6 +254,7 @@ export function useVoiceClient({
   const [status, setStatus] = useState<VoiceConnectionStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<VoiceRemoteStream[]>([]);
+  const [sessionInfo, setSessionInfo] = useState<VoiceSessionInfo | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
   const [diagnostics, setDiagnostics] = useState<VoiceNetworkDiagnostics>(DEFAULT_VOICE_DIAGNOSTICS);
   const audioSettingsRef = useRef<VoiceAudioSettings>(audioSettings);
@@ -610,6 +618,7 @@ export function useVoiceClient({
       localStreamRef.current = null;
     }
     sessionRef.current = null;
+    setSessionInfo(null);
     transportStatesRef.current = { send: 'idle', recv: 'idle' };
     iceRestartCountRef.current = 0;
     outputEnabledRef.current = true;
@@ -788,6 +797,13 @@ export function useVoiceClient({
         channelId,
         iceServers: joined.iceServers,
       };
+      setSessionInfo({
+        sessionId: joined.sessionId,
+        channelId,
+        iceServers: joined.iceServers,
+        screenShare: joined.screenShare,
+        screenShares: joined.screenShares,
+      });
 
       const device = new Device();
       await device.load({
@@ -888,6 +904,7 @@ export function useVoiceClient({
     inputLevel,
     diagnostics,
     remoteStreams,
+    session: sessionInfo,
     join,
     leave,
     setInputEnabled,

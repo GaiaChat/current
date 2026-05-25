@@ -24,6 +24,7 @@ export function runMigrations(db: DatabaseSync): void {
       handle TEXT NOT NULL,
       display_name TEXT NOT NULL,
       avatar_url TEXT,
+      banner_url TEXT,
       bio TEXT,
       selected_presence_status TEXT NOT NULL DEFAULT 'online',
       created_at TEXT NOT NULL,
@@ -333,16 +334,26 @@ export function runMigrations(db: DatabaseSync): void {
   if (!userColumns.some((column) => column.name === 'bio')) {
     db.exec('ALTER TABLE users ADD COLUMN bio TEXT;');
   }
+  if (!userColumns.some((column) => column.name === 'banner_url')) {
+    db.exec('ALTER TABLE users ADD COLUMN banner_url TEXT;');
+  }
   if (!userColumns.some((column) => column.name === 'selected_presence_status')) {
-    db.exec("ALTER TABLE users ADD COLUMN selected_presence_status TEXT NOT NULL DEFAULT 'online';");
+    db.exec(
+      "ALTER TABLE users ADD COLUMN selected_presence_status TEXT NOT NULL DEFAULT 'online';",
+    );
   }
 
-  const attachmentColumns = db.prepare('PRAGMA table_info(attachments)').all() as Array<{ name: string }>;
+  const attachmentColumns = db.prepare('PRAGMA table_info(attachments)').all() as Array<{
+    name: string;
+  }>;
   if (!attachmentColumns.some((column) => column.name === 'owner_user_id')) {
     db.exec('ALTER TABLE attachments ADD COLUMN owner_user_id TEXT;');
   }
 
-  const roles = db.prepare('SELECT id, permissions FROM roles').all() as Array<{ id: string; permissions: string }>;
+  const roles = db.prepare('SELECT id, permissions FROM roles').all() as Array<{
+    id: string;
+    permissions: string;
+  }>;
   const updateRolePermissions = db.prepare('UPDATE roles SET permissions = ? WHERE id = ?');
   for (const role of roles) {
     let permissions: unknown;

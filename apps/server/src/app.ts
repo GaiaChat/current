@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
+import { MAX_CONFIGURABLE_ATTACHMENT_BYTES } from '@current/config';
 import type { AppContext } from './types/context.js';
 import { attachCurrentUser } from './api/auth-guard.js';
 import { registerSetupRoutes } from './api/routes/setup-routes.js';
@@ -54,7 +55,7 @@ export function buildApp(context: AppContext, options: BuildAppOptions = {}) {
 
   app.register(multipart, {
     limits: {
-      fileSize: context.config.media.maxAttachmentBytes,
+      fileSize: MAX_CONFIGURABLE_ATTACHMENT_BYTES,
     },
   });
 
@@ -66,6 +67,7 @@ export function buildApp(context: AppContext, options: BuildAppOptions = {}) {
   });
 
   app.addHook('onClose', async () => {
+    context.screenShare.close();
     await context.voice.close();
   });
 

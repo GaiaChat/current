@@ -1,4 +1,12 @@
-import type { CurrentUser, Message, UserPresence, VoiceProducer, VoiceState } from '@current/types';
+import type {
+  CurrentUser,
+  Message,
+  UserPresence,
+  VoiceProducer,
+  VoiceScreenShare,
+  VoiceScreenShareSignal,
+  VoiceState,
+} from '@current/types';
 
 export type ClientEventType =
   | 'ACK'
@@ -23,6 +31,9 @@ export type ServerEventType =
   | 'VOICE_STATE_UPDATE'
   | 'VOICE_PRODUCER_ADDED'
   | 'VOICE_PRODUCER_REMOVED'
+  | 'VOICE_SCREEN_SHARE_STARTED'
+  | 'VOICE_SCREEN_SHARE_STOPPED'
+  | 'VOICE_SCREEN_SHARE_SIGNAL'
   | 'VOICE_SPEAKING'
   | 'SERVER_UPDATE'
   | 'MEMBER_UPDATE'
@@ -92,6 +103,24 @@ export interface VoiceSpeakingPayload {
   volume?: number;
 }
 
+export interface VoiceScreenShareStartedPayload {
+  screenShare: VoiceScreenShare;
+}
+
+export interface VoiceScreenShareStoppedPayload {
+  shareId: string;
+  channelId: string;
+  userId: string;
+}
+
+export interface VoiceScreenShareSignalPayload {
+  channelId: string;
+  shareId: string;
+  fromUserId: string;
+  targetUserId: string;
+  signal: VoiceScreenShareSignal;
+}
+
 export interface ModActionPayload {
   type: 'ban' | 'mute' | 'timeout' | 'kick' | 'warn';
   targetUserId: string;
@@ -147,6 +176,9 @@ export const GatewayEvents = {
   VOICE_STATE_UPDATE: 'VOICE_STATE_UPDATE',
   VOICE_PRODUCER_ADDED: 'VOICE_PRODUCER_ADDED',
   VOICE_PRODUCER_REMOVED: 'VOICE_PRODUCER_REMOVED',
+  VOICE_SCREEN_SHARE_STARTED: 'VOICE_SCREEN_SHARE_STARTED',
+  VOICE_SCREEN_SHARE_STOPPED: 'VOICE_SCREEN_SHARE_STOPPED',
+  VOICE_SCREEN_SHARE_SIGNAL: 'VOICE_SCREEN_SHARE_SIGNAL',
   VOICE_SPEAKING: 'VOICE_SPEAKING',
   SERVER_UPDATE: 'SERVER_UPDATE',
   MEMBER_UPDATE: 'MEMBER_UPDATE',

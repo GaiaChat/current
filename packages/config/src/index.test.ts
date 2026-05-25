@@ -21,6 +21,9 @@ describe('config schema', () => {
     expect(config.appearance.ownMessageColor).toBe('');
     expect(config.appearance.otherMessageColor).toBe('');
     expect(config.rtc.workerCount).toBe(0);
+    expect(config.rtc.screenShare.transportMode).toBe('p2p_mesh');
+    expect(config.rtc.screenShare.maxWidth).toBe(1280);
+    expect(config.rtc.screenShare.maxHeight).toBe(720);
   });
 
   it('migrates unknown versions into v1', () => {
