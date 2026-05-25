@@ -23,6 +23,7 @@ import {
 } from '@tanstack/react-query';
 import type {
   Channel,
+  ClientUsageSnapshot,
   Message,
   PageResponse,
   ServerAccess,
@@ -98,6 +99,8 @@ const MICROPHONE_MUTED_ICON_URL = new URL(
   import.meta.url,
 ).href;
 const DEFAULT_SERVER_PORT = 6414;
+const CLIENT_PRESENCE_ID_STORAGE_KEY = 'current.clientPresenceId';
+const CLIENT_USAGE_DEFAULT_HEARTBEAT_SECONDS = 15;
 
 type AuthMode = 'atproto' | 'lan';
 type RegistrationMode = 'invite_only' | 'open_signup' | 'manual_approval';
@@ -2011,6 +2014,45 @@ function loadMembersPaneWidth(): number {
   }
 }
 
+function isValidClientPresenceId(value: string): boolean {
+  return /^[A-Za-z0-9._:-]{12,128}$/.test(value);
+}
+
+function createClientPresenceId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `web-${globalThis.crypto.randomUUID()}`;
+  }
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function loadClientPresenceId(): string {
+  if (typeof window === 'undefined') {
+    return createClientPresenceId();
+  }
+  try {
+    const stored = window.localStorage.getItem(CLIENT_PRESENCE_ID_STORAGE_KEY);
+    if (stored && isValidClientPresenceId(stored)) {
+      return stored;
+    }
+    const next = createClientPresenceId();
+    window.localStorage.setItem(CLIENT_PRESENCE_ID_STORAGE_KEY, next);
+    return next;
+  } catch {
+    return createClientPresenceId();
+  }
+}
+
+function formatClientUsage(snapshot: ClientUsageSnapshot | null | undefined): string {
+  if (!snapshot) {
+    return 'Checking live usage';
+  }
+  const count = Math.max(0, snapshot.activePeople);
+  if (count === 0) {
+    return 'No one using Current now';
+  }
+  return `${count.toLocaleString()} ${count === 1 ? 'person' : 'people'} using Current now`;
+}
+
 function slugifyServerName(value: string): string {
   const normalized = value
     .trim()
@@ -2584,8 +2626,27 @@ function formatVoiceNetworkDiagnostics(diagnostics: VoiceNetworkDiagnostics): st
   return parts.join(' · ') || 'checking route';
 }
 
+function ClientUsageBadge({
+  usage,
+  compact = false,
+}: {
+  usage?: ClientUsageSnapshot | null;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`client-usage-badge ${compact ? 'compact' : ''}`}
+      title={usage ? `Last ping ${new Date(usage.updatedAt).toLocaleTimeString()}` : undefined}
+    >
+      <span className="client-usage-dot" aria-hidden />
+      <span>{formatClientUsage(usage)}</span>
+    </div>
+  );
+}
+
 export function App() {
   const queryClient = useQueryClient();
+  const [clientPresenceId] = useState(loadClientPresenceId);
   const isAnimationPlaybackActive = useWindowAnimationFocus();
   useRendererPerfProbe('Current', 'current.perfProbe');
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
@@ -3557,6 +3618,21 @@ export function App() {
         setIsExchangingAuth(false);
       });
   }, [clearServerRemovalNotice]);
+
+  const clientUsageQuery = useQuery({
+    queryKey: ['client-usage', clientPresenceId],
+    queryFn: () =>
+      apiPost<ClientUsageSnapshot>('/api/v1/client/ping', {
+        clientId: clientPresenceId,
+      }),
+    refetchInterval: (query) =>
+      Math.max(
+        5_000,
+        (query.state.data?.heartbeatSeconds ?? CLIENT_USAGE_DEFAULT_HEARTBEAT_SECONDS) * 1_000,
+      ),
+    retry: false,
+    staleTime: 5_000,
+  });
 
   const setupQuery = useQuery({
     queryKey: ['setup-status'],
@@ -7623,6 +7699,7 @@ export function App() {
           authMode={setupQuery.data?.authMode ?? 'atproto'}
           title="Sign In To Create Your Server"
           subtitle="Current assigns owner/admin permissions to the account that creates the server."
+          clientUsage={clientUsageQuery.data}
         />
       );
     }
@@ -7632,6 +7709,7 @@ export function App() {
         owner={sessionQuery.data.user}
         authMode={setupQuery.data?.authMode ?? 'atproto'}
         serverPort={setupQuery.data?.network?.port}
+        clientUsage={clientUsageQuery.data}
         onConfigured={handleSetupConfigured}
       />
     );
@@ -7652,11 +7730,14 @@ export function App() {
               : 'Sign in again to rejoin this server.'
           }
           onAuthStart={clearServerRemovalNotice}
+          clientUsage={clientUsageQuery.data}
         />
       );
     }
 
-    return <ServerRemovalScreen notice={activeServerRemovalNotice} />;
+    return (
+      <ServerRemovalScreen notice={activeServerRemovalNotice} clientUsage={clientUsageQuery.data} />
+    );
   }
 
   if (sessionQuery.isError || !sessionQuery.data?.user) {
@@ -7672,6 +7753,7 @@ export function App() {
               ? validateInviteMutation.error.message
               : undefined
           }
+          clientUsage={clientUsageQuery.data}
         />
       );
     }
@@ -7688,6 +7770,7 @@ export function App() {
             : undefined
         }
         onAuthStart={clearServerRemovalNotice}
+        clientUsage={clientUsageQuery.data}
       />
     );
   }
@@ -7709,6 +7792,7 @@ export function App() {
             ? claimInviteMutation.error.message
             : undefined)
         }
+        clientUsage={clientUsageQuery.data}
       />
     );
   }
@@ -8285,6 +8369,7 @@ export function App() {
             </button>
           </div>
         </header>
+        <ClientUsageBadge usage={clientUsageQuery.data} compact />
 
         <div
           className={`channel-list ${draggingChannelId ? 'dragging-channels' : ''}`}
@@ -10295,11 +10380,13 @@ function SetupWizard({
   owner,
   authMode,
   serverPort,
+  clientUsage,
   onConfigured,
 }: {
   owner: SessionPayload['user'];
   authMode: AuthMode;
   serverPort?: number;
+  clientUsage?: ClientUsageSnapshot | null;
   onConfigured: (
     result: SetupBootstrapResponse,
     initialPresenceStatus: UserPresenceStatus,
@@ -10402,6 +10489,7 @@ function SetupWizard({
             Give the server its identity, choose the defaults people land in, and wire media before
             the room opens.
           </p>
+          <ClientUsageBadge usage={clientUsage} />
         </header>
 
         <div className="setup-owner-row">
@@ -10613,7 +10701,13 @@ function normalizeSetupPort(value: unknown): number | null {
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
 }
 
-function ServerRemovalScreen({ notice }: { notice: ServerRemovalNotice }) {
+function ServerRemovalScreen({
+  notice,
+  clientUsage,
+}: {
+  notice: ServerRemovalNotice;
+  clientUsage?: ClientUsageSnapshot | null;
+}) {
   return (
     <div className="wizard-wrap auth-wrap">
       <div className="wizard-card auth-card server-removal-card">
@@ -10630,6 +10724,7 @@ function ServerRemovalScreen({ notice }: { notice: ServerRemovalNotice }) {
           ) : (
             <p>This server is not accepting this account.</p>
           )}
+          <ClientUsageBadge usage={clientUsage} />
         </div>
       </div>
     </div>
@@ -10642,12 +10737,14 @@ function InviteGateScreen({
   onValidateInvite,
   validatingInvite,
   error,
+  clientUsage,
 }: {
   serverName: string;
   initialCode?: string;
   onValidateInvite: (code: string) => void;
   validatingInvite: boolean;
   error?: string;
+  clientUsage?: ClientUsageSnapshot | null;
 }) {
   const [inviteCode, setInviteCode] = useState(initialCode ?? '');
   const normalizedInviteCode = inviteCode.trim();
@@ -10664,6 +10761,7 @@ function InviteGateScreen({
           />
           <h1>Invite Required</h1>
           <p>{serverName} requires a valid invite code before sign-in.</p>
+          <ClientUsageBadge usage={clientUsage} />
         </div>
 
         <form
@@ -10704,6 +10802,7 @@ function AccessGateScreen({
   joiningWaitlist,
   claimingInvite,
   error,
+  clientUsage,
 }: {
   access: ServerAccess;
   serverName: string;
@@ -10712,6 +10811,7 @@ function AccessGateScreen({
   joiningWaitlist: boolean;
   claimingInvite: boolean;
   error?: string;
+  clientUsage?: ClientUsageSnapshot | null;
 }) {
   const [inviteCode, setInviteCode] = useState('');
   const normalizedInviteCode = inviteCode.trim();
@@ -10750,6 +10850,7 @@ function AccessGateScreen({
           />
           <h1>{title}</h1>
           <p>{message}</p>
+          <ClientUsageBadge usage={clientUsage} />
         </div>
 
         {access.state === 'not_requested' && (
@@ -10804,11 +10905,13 @@ function AuthScreen({
   title,
   subtitle,
   onAuthStart,
+  clientUsage,
 }: {
   authMode?: AuthMode;
   title?: string;
   subtitle?: string;
   onAuthStart?: () => void;
+  clientUsage?: ClientUsageSnapshot | null;
 }) {
   const [lanScreenName, setLanScreenName] = useState('');
   const [lanHandoff, setLanHandoff] = useState<OAuthLanHandoffPayload | null>(null);
@@ -10936,6 +11039,7 @@ function AuthScreen({
           />
           <h1>{resolvedTitle}</h1>
           {resolvedSubtitle.length > 0 && <p>{resolvedSubtitle}</p>}
+          <ClientUsageBadge usage={clientUsage} />
         </div>
         {isLanMode ? (
           <>

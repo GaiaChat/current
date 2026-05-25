@@ -14,6 +14,7 @@ import type { GatewayService } from '../realtime/gateway-service.js';
 import type { ServerConfigService } from '../services/server-config-service.js';
 import type { RepositoryBag } from '../db/repositories/index.js';
 import type { AtprotoBlockService } from '../services/atproto-block-service.js';
+import type { ClientPresenceService } from '../services/client-presence-service.js';
 
 export interface AppContext {
   db: DatabaseSync;
@@ -28,6 +29,7 @@ export interface AppContext {
   invites: InviteService;
   members: MemberService;
   atprotoBlocks: AtprotoBlockService;
+  clientPresence: ClientPresenceService;
   voice: VoiceService;
   screenShare: VoiceMediaShareService<VoiceScreenShare>;
   cameraShare: VoiceMediaShareService<VoiceCameraShare>;

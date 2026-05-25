@@ -67,6 +67,14 @@ export interface CurrentServer {
   createdAt: ISODate;
 }
 
+export interface ClientUsageSnapshot {
+  activeClients: number;
+  activePeople: number;
+  heartbeatSeconds: number;
+  ttlSeconds: number;
+  updatedAt: ISODate;
+}
+
 export interface ServerAccessRequestUser {
   id: string;
   did: string;
