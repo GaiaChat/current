@@ -90,7 +90,7 @@ It will ask for a launch mode:
 - Normal: builds once, then runs the server without source watchers
 - Dev: builds/watches the web GUI and restarts the server on source changes
 
-If the configured port is already in use, the launcher will stop before building and offer to open the existing server or retry after you close the other process.
+If the configured port is already in use, the launcher will stop before building and offer to open the existing server, stop the process using that port, retry, or exit.
 
 Open `http://127.0.0.1:6414` for the standard instance, or `http://127.0.0.1:8081` for the LAN instance.
 

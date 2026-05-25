@@ -524,6 +524,338 @@ function localLanUrls(port) {
   return urls;
 }
 
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function truncate(value, maxLength = 160) {
+  if (!value || value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function uniqueOwners(owners) {
+  const byPid = new Map();
+  for (const owner of owners) {
+    const pid = Number(owner.pid);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      continue;
+    }
+    const existing = byPid.get(pid) ?? {};
+    byPid.set(pid, {
+      ...existing,
+      ...owner,
+      pid,
+      name: owner.name || existing.name || '',
+      commandLine: owner.commandLine || existing.commandLine || '',
+    });
+  }
+  return [...byPid.values()].filter((owner) => owner.pid !== process.pid);
+}
+
+function processInfo(pid, field) {
+  const result = spawnSync('ps', ['-p', String(pid), '-o', `${field}=`], {
+    encoding: 'utf8',
+    shell: false,
+  });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+function enrichPosixOwners(owners) {
+  return uniqueOwners(owners).map((owner) => ({
+    ...owner,
+    name: owner.name || processInfo(owner.pid, 'comm'),
+    commandLine: owner.commandLine || processInfo(owner.pid, 'command'),
+  }));
+}
+
+function parseLsofOwners(output) {
+  const owners = [];
+  let current = null;
+  for (const line of output.split(/\r?\n/)) {
+    if (!line) {
+      continue;
+    }
+    const type = line[0];
+    const value = line.slice(1);
+    if (type === 'p') {
+      if (current) {
+        owners.push(current);
+      }
+      current = { pid: Number(value) };
+    } else if (current && type === 'c') {
+      current.name = value;
+    }
+  }
+  if (current) {
+    owners.push(current);
+  }
+  return owners;
+}
+
+function parsePidMatches(output) {
+  const owners = [];
+  const seen = new Set();
+  const patterns = [/pid=(\d+)/g, /(?:^|\s)(\d+)\/[^\s,]+/g];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(output))) {
+      const pid = Number(match[1]);
+      if (Number.isInteger(pid) && pid > 0 && !seen.has(pid)) {
+        seen.add(pid);
+        owners.push({ pid });
+      }
+    }
+  }
+  return owners;
+}
+
+function localAddressHasPort(address, port) {
+  const normalized = String(address ?? '').replace(/^\[/, '').replace(/\]$/, '');
+  return normalized.endsWith(`:${port}`) || normalized.endsWith(`.${port}`);
+}
+
+function parsePosixCommandOwners(output, port) {
+  const owners = [];
+  for (const line of output.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    const localAddress = columns[3] ?? '';
+    if (!localAddressHasPort(localAddress, port)) {
+      continue;
+    }
+    owners.push(...parsePidMatches(line));
+  }
+  return owners;
+}
+
+function findPosixPortOwners(port) {
+  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc'], {
+    encoding: 'utf8',
+    shell: false,
+  });
+  if (lsof.status === 0 && lsof.stdout.trim()) {
+    return enrichPosixOwners(parseLsofOwners(lsof.stdout));
+  }
+
+  const ss = spawnSync('ss', ['-ltnp'], {
+    encoding: 'utf8',
+    shell: false,
+  });
+  if (ss.status === 0) {
+    const owners = parsePosixCommandOwners(ss.stdout, port);
+    if (owners.length > 0) {
+      return enrichPosixOwners(owners);
+    }
+  }
+
+  const netstat = spawnSync('netstat', ['-ltnp'], {
+    encoding: 'utf8',
+    shell: false,
+  });
+  if (netstat.status === 0) {
+    const owners = parsePosixCommandOwners(netstat.stdout, port);
+    if (owners.length > 0) {
+      return enrichPosixOwners(owners);
+    }
+  }
+
+  return [];
+}
+
+function powershellCommand() {
+  for (const command of ['pwsh.exe', 'powershell.exe', 'pwsh', 'powershell']) {
+    if (commandWorks(command, ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'])) {
+      return command;
+    }
+  }
+  return null;
+}
+
+function normalizeWindowsOwnerJson(raw) {
+  if (!raw.trim()) {
+    return [];
+  }
+  const parsed = JSON.parse(raw);
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+  return entries.map((entry) => ({
+    pid: Number(entry.pid ?? entry.ProcessId),
+    name: String(entry.name ?? entry.Name ?? ''),
+    commandLine: String(entry.commandLine ?? entry.CommandLine ?? ''),
+  }));
+}
+
+function windowsProcessDetails(pid, shellCommand) {
+  if (!shellCommand) {
+    return { pid };
+  }
+  const script = [
+    `$process = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"`,
+    'if ($process) {',
+    '  [PSCustomObject]@{ pid = [int]$process.ProcessId; name = [string]$process.Name; commandLine = [string]$process.CommandLine } | ConvertTo-Json -Compress',
+    '}',
+  ].join('; ');
+  const result = spawnSync(shellCommand, ['-NoProfile', '-Command', script], {
+    encoding: 'utf8',
+    shell: false,
+  });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return { pid };
+  }
+  try {
+    return normalizeWindowsOwnerJson(result.stdout)[0] ?? { pid };
+  } catch {
+    return { pid };
+  }
+}
+
+function parseWindowsNetstatOwners(output, port, shellCommand) {
+  const owners = [];
+  const portSuffix = `:${port}`;
+  for (const line of output.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length < 5 || columns[0].toUpperCase() !== 'TCP') {
+      continue;
+    }
+    const localAddress = columns[1] ?? '';
+    const state = columns[3] ?? '';
+    const pid = Number(columns[4]);
+    if (state.toUpperCase() === 'LISTENING' && localAddress.endsWith(portSuffix) && Number.isInteger(pid)) {
+      owners.push(windowsProcessDetails(pid, shellCommand));
+    }
+  }
+  return owners;
+}
+
+function findWindowsPortOwners(port) {
+  const shellCommand = powershellCommand();
+  if (shellCommand) {
+    const script = [
+      '$ErrorActionPreference = "SilentlyContinue"',
+      `$processIds = @(Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess -Unique)`,
+      '$items = foreach ($ownerId in $processIds) {',
+      '  $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId"',
+      '  if ($process) { [PSCustomObject]@{ pid = [int]$process.ProcessId; name = [string]$process.Name; commandLine = [string]$process.CommandLine } }',
+      '}',
+      '$items | ConvertTo-Json -Compress',
+    ].join('; ');
+    const result = spawnSync(shellCommand, ['-NoProfile', '-Command', script], {
+      encoding: 'utf8',
+      shell: false,
+    });
+    if (result.status === 0 && result.stdout.trim()) {
+      try {
+        return uniqueOwners(normalizeWindowsOwnerJson(result.stdout));
+      } catch {
+        // Fall back to netstat below.
+      }
+    }
+  }
+
+  const netstat = spawnSync('netstat.exe', ['-ano', '-p', 'tcp'], {
+    encoding: 'utf8',
+    shell: false,
+  });
+  if (netstat.status !== 0) {
+    return [];
+  }
+  return uniqueOwners(parseWindowsNetstatOwners(netstat.stdout, port, shellCommand));
+}
+
+function findPortOwners(port) {
+  return isWindows ? findWindowsPortOwners(port) : findPosixPortOwners(port);
+}
+
+function isLikelyCurrentOwner(owner) {
+  const text = `${owner.name ?? ''} ${owner.commandLine ?? ''}`.replaceAll('\\', '/').toLowerCase();
+  return (
+    text.includes('start-current-server.mjs') ||
+    text.includes('@current/server') ||
+    text.includes('apps/server/dist/index.js') ||
+    text.includes('apps/server/src/dev-launcher.ts') ||
+    text.includes('current-server-v') ||
+    text.includes('/current-chat/')
+  );
+}
+
+function describeOwner(owner) {
+  const name = owner.name ? ` ${owner.name}` : '';
+  const commandLine = owner.commandLine ? ` - ${truncate(owner.commandLine)}` : '';
+  return `PID ${owner.pid}${name}${commandLine}`;
+}
+
+function stopOwner(owner, force = false) {
+  if (isWindows) {
+    const args = ['/PID', String(owner.pid), '/T'];
+    if (force) {
+      args.push('/F');
+    }
+    const result = spawnSync('taskkill.exe', args, {
+      encoding: 'utf8',
+      shell: false,
+    });
+    return result.status === 0;
+  }
+
+  try {
+    process.kill(owner.pid, force ? 'SIGKILL' : 'SIGTERM');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForPortRelease(config, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await canListen(config.host, config.port);
+    if (status.available) {
+      return true;
+    }
+    await sleep(250);
+  }
+  return false;
+}
+
+async function stopPortOwnersAndRetry(config, owners) {
+  const stoppableOwners = uniqueOwners(owners);
+  if (stoppableOwners.length === 0) {
+    console.log('[Current] I could not identify a process to stop for this port.');
+    return false;
+  }
+
+  for (const owner of stoppableOwners) {
+    console.log(`[Current] Stopping ${describeOwner(owner)}...`);
+    stopOwner(owner, false);
+  }
+
+  if (await waitForPortRelease(config, 5_000)) {
+    console.log(`[Current] Port ${config.port} is free now.`);
+    return true;
+  }
+
+  console.log(`[Current] Port ${config.port} is still busy after a graceful stop request.`);
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    const answer = (await ask('Force stop the process tree using this port? [y/N]: ')).trim().toLowerCase();
+    if (answer !== 'y' && answer !== 'yes') {
+      return false;
+    }
+  }
+
+  for (const owner of stoppableOwners) {
+    console.log(`[Current] Force stopping ${describeOwner(owner)}...`);
+    stopOwner(owner, true);
+  }
+
+  if (await waitForPortRelease(config, 5_000)) {
+    console.log(`[Current] Port ${config.port} is free now.`);
+    return true;
+  }
+
+  console.log(`[Current] Port ${config.port} is still busy.`);
+  return false;
+}
+
 async function ensurePortAvailable(config) {
   while (true) {
     const status = await canListen(config.host, config.port);
@@ -538,6 +870,19 @@ async function ensurePortAvailable(config) {
     console.log('');
     console.log(`[Current] Port ${config.port} is already in use on ${config.host}.`);
     console.log(`[Current] Another Current server may already be running at ${config.url}.`);
+    const portOwners = findPortOwners(config.port);
+    const currentOwners = portOwners.filter(isLikelyCurrentOwner);
+    const ownersToStop = currentOwners.length > 0 ? currentOwners : portOwners;
+    const stopLabel = currentOwners.length > 0
+      ? 'Stop the existing Current server and retry'
+      : 'Stop the process using this port and retry';
+    if (portOwners.length > 0) {
+      console.log('[Current] Process using this port:');
+      for (const owner of portOwners) {
+        const marker = isLikelyCurrentOwner(owner) ? ' (Current)' : '';
+        console.log(`  - ${describeOwner(owner)}${marker}`);
+      }
+    }
 
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       throw new Error(`Port ${config.port} is busy. Stop the process using it, then run the launcher again.`);
@@ -546,9 +891,18 @@ async function ensurePortAvailable(config) {
     console.log('');
     console.log('What would you like to do?');
     console.log('  1) Open the existing server and exit');
-    console.log('  2) I stopped the other process, retry the port check');
-    console.log('  3) Exit');
-    const answer = (await ask('Choose [1/open, 2/retry, 3/exit] (default: open): ')).trim().toLowerCase();
+    if (ownersToStop.length > 0) {
+      console.log(`  2) ${stopLabel}`);
+      console.log('  3) I stopped the other process, retry the port check');
+      console.log('  4) Exit');
+    } else {
+      console.log('  2) I stopped the other process, retry the port check');
+      console.log('  3) Exit');
+    }
+    const prompt = ownersToStop.length > 0
+      ? 'Choose [1/open, 2/stop, 3/retry, 4/exit] (default: open): '
+      : 'Choose [1/open, 2/retry, 3/exit] (default: open): ';
+    const answer = (await ask(prompt)).trim().toLowerCase();
 
     if (!answer || answer === '1' || answer === 'open' || answer === 'o') {
       openUrl(config.url);
@@ -556,11 +910,24 @@ async function ensurePortAvailable(config) {
       return false;
     }
 
-    if (answer === '2' || answer === 'retry' || answer === 'r') {
+    if (ownersToStop.length > 0 && (answer === '2' || answer === 'stop' || answer === 's')) {
+      if (await stopPortOwnersAndRetry(config, ownersToStop)) {
+        continue;
+      }
       continue;
     }
 
-    if (answer === '3' || answer === 'exit' || answer === 'e') {
+    if (
+      (ownersToStop.length > 0 && (answer === '3' || answer === 'retry' || answer === 'r')) ||
+      (ownersToStop.length === 0 && (answer === '2' || answer === 'retry' || answer === 'r'))
+    ) {
+      continue;
+    }
+
+    if (
+      (ownersToStop.length > 0 && (answer === '4' || answer === 'exit' || answer === 'e')) ||
+      (ownersToStop.length === 0 && (answer === '3' || answer === 'exit' || answer === 'e'))
+    ) {
       return false;
     }
 
