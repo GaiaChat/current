@@ -27,6 +27,23 @@ const symlinkSafePnpmArgs = [
   '--config.package-import-method=copy',
   '--config.prefer-symlinked-executables=false',
 ];
+const requiredReleaseFiles = [
+  'package.json',
+  'release-info.json',
+  'update-current-server.mjs',
+  'Update Current.cmd',
+  'Update Current.command',
+  'Update Current Linux.sh',
+  'Current Server.cmd',
+  'Current Server.command',
+  'Current Server Linux.sh',
+  'scripts/update-current-server.mjs',
+  'scripts/start-current-server.mjs',
+  'scripts/install-local-current.mjs',
+  'scripts/install-current.sh',
+  'apps/server/dist/index.js',
+  'apps/web/dist/index.html',
+];
 
 function usage() {
   return [
@@ -424,6 +441,32 @@ async function extractVersion(archivePath, options, expectedRoot) {
   }
 }
 
+async function verifyStagedReleaseBundle(versionDir, expectedVersion) {
+  const missingFiles = [];
+  for (const relativePath of requiredReleaseFiles) {
+    if (!(await pathExists(join(versionDir, relativePath)))) {
+      missingFiles.push(relativePath);
+    }
+  }
+  if (missingFiles.length > 0) {
+    throw new Error(
+      `Staged update is incomplete. Missing: ${missingFiles.join(', ')}`,
+    );
+  }
+
+  const releaseInfo = JSON.parse(await readFile(join(versionDir, 'release-info.json'), 'utf8'));
+  const stagedVersion = String(releaseInfo.version || '').trim();
+  if (stagedVersion !== expectedVersion) {
+    throw new Error(
+      `Staged update version mismatch. Expected ${expectedVersion}, got ${stagedVersion || 'unknown'}.`,
+    );
+  }
+
+  console.log(
+    '[Current update] Verified full release bundle, including root updater launchers and latest script files.',
+  );
+}
+
 async function switchCurrentSymlink(options, targetDir) {
   await mkdir(options.installRoot, { recursive: true });
   const currentPath = join(options.installRoot, 'current');
@@ -503,6 +546,7 @@ async function main(options) {
 
   await backupServerState(options);
   const versionDir = await extractVersion(archivePath, options, archiveRoot);
+  await verifyStagedReleaseBundle(versionDir, latestVersion);
   await installProductionDependencies(versionDir);
   await switchCurrentSymlink(options, versionDir);
   const restartResult = await restartService(options.restart);
