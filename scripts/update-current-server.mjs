@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const defaultRepository = 'GaiaChat/current';
 const defaultManifestUrl = `https://github.com/${defaultRepository}/releases/latest/download/current-server-latest.json`;
-const fallbackPnpmVersion = process.env.CURRENT_PNPM_VERSION || '10.33.0';
+const fallbackPnpmVersion = process.env.CURRENT_PNPM_VERSION || '11.3.0';
 const scriptRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function usage() {

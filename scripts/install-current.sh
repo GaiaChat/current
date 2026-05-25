@@ -158,7 +158,7 @@ chmod 0640 "$CONFIG_PATH" 2>/dev/null || true
 
 cd "$CURRENT_WORKDIR"
 
-PNPM_VERSION="${CURRENT_PNPM_VERSION:-10.33.0}"
+PNPM_VERSION="${CURRENT_PNPM_VERSION:-11.3.0}"
 if command -v pnpm >/dev/null 2>&1; then
   PM=(pnpm)
 elif command -v corepack >/dev/null 2>&1; then

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Current - local-first Discord-style chat and voice with atproto auth",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.3.0",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -38,14 +38,5 @@
     "turbo": "^2.5.8",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
-  },
-  "pnpm": {
-    "overrides": {
-      "fast-uri": "3.1.2"
-    },
-    "onlyBuiltDependencies": [
-      "electron",
-      "mediasoup"
-    ]
   }
 }
