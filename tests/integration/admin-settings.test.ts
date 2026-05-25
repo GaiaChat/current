@@ -145,6 +145,7 @@ describe('admin settings and insights', () => {
     });
     expect(allowedSettings.statusCode).toBe(200);
     const allowedPayload = allowedSettings.json() as {
+      serverVersion: string;
       auth: { mode: string };
       media: {
         gifProvider: string;
@@ -156,6 +157,7 @@ describe('admin settings and insights', () => {
       };
       config: { media: { gifProvider: string; gifFallbackProvider: string; klipyApiKeyConfigured: boolean; giphyApiKeyConfigured: boolean } };
     };
+    expect(allowedPayload.serverVersion).toMatch(/^(dev|\d+\.\d+\.\d+(?:[-+].+)?)$/);
     expect(allowedPayload.auth.mode).toBe('atproto');
     expect(allowedPayload.media.gifProvider).toBe('klipy');
     expect(allowedPayload.media.gifFallbackProvider).toBe('none');

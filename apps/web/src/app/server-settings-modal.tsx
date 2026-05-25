@@ -165,6 +165,7 @@ interface RedactedConfig {
 }
 
 interface ServerSettingsPayload {
+  serverVersion?: string;
   server: {
     id?: string;
     name: string;
@@ -1843,6 +1844,7 @@ export function ServerSettingsModal({
     if (!draft) {
       return <div className="settings-empty-inline">Loading server settings...</div>;
     }
+    const serverVersion = settingsQuery.data?.serverVersion?.trim();
     return (
       <div className="settings-panel-grid">
         <section className="settings-panel wide">
@@ -1868,6 +1870,12 @@ export function ServerSettingsModal({
 
         <section className="settings-panel">
           <h3>Server Identity</h3>
+          {serverVersion && (
+            <div className="settings-readonly-row">
+              <span>Server version</span>
+              <strong>v{serverVersion}</strong>
+            </div>
+          )}
           <label>
             {renderFieldLabel('Server name')}
             <input value={draft.server.name} onChange={(event) => updateDraft('server', { name: event.target.value })} />
@@ -2806,7 +2814,12 @@ export function ServerSettingsModal({
               />
               <h2>Server Settings</h2>
             </div>
-            <small>{activeCopy.summary}</small>
+            <small className="settings-title-meta">
+              <span>{activeCopy.summary}</span>
+              {settingsQuery.data?.serverVersion && (
+                <span>Server v{settingsQuery.data.serverVersion}</span>
+              )}
+            </small>
           </div>
           <button className="settings-close" onClick={onClose}>x</button>
         </header>

@@ -8,6 +8,7 @@ import type { Permission, RegistrationMode, Role } from '@current/types';
 import { requireAuth } from '../auth-guard.js';
 import { denyForbidden, hasServerPermission } from '../permission-guard.js';
 import { hasPermission, resolvePermissions } from '../../moderation/permissions.js';
+import { getServerVersion } from '../../services/server-version.js';
 import { buildPublicAppearance, buildPublicServerPayload } from './server-payload.js';
 
 const PermissionSchema = z.enum([
@@ -531,6 +532,7 @@ function buildSettingsPayload(app: FastifyInstance, restartRequiredFields: strin
 
   return {
     server,
+    serverVersion: getServerVersion(),
     config: buildRedactedConfig(app, config),
     auth: {
       mode: config.auth.mode,
