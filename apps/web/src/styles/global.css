@@ -452,6 +452,7 @@ select {
 
 .channels-pane,
 .members-pane,
+.member-profile-popout,
 .chat-pane,
 .chat-title-glass-shell,
 .composer-inline,
@@ -3413,6 +3414,29 @@ select {
   text-align: right;
 }
 
+.message-author-profile-trigger {
+  min-width: 0;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 2px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  text-align: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-author-profile-trigger:hover,
+.message-author-profile-trigger:focus-visible {
+  outline: none;
+  color: #d7f6ff;
+  background: rgba(48, 180, 255, 0.1);
+}
+
 .message-action-button {
   border: 1px solid transparent;
   border-radius: 7px;
@@ -4047,15 +4071,33 @@ video.attachment-preview {
   top: var(--member-profile-popout-top);
   z-index: 95;
   --floating-glass-radius: 24px;
-  --glass-panel-bg: rgba(8, 22, 36, 0.24);
-  --glass-control-bg: rgba(48, 180, 255, 0.08);
-  --glass-hover-bg: rgba(48, 180, 255, 0.16);
-  --glass-active-bg: rgba(110, 255, 191, 0.14);
+  --member-profile-banner-height: 112px;
+  --member-profile-surface-rgb: var(--side-panel-surface-rgb);
+  --member-profile-accent-rgb: var(--side-panel-color-rgb);
+  --glass-panel-bg: rgb(var(--member-profile-surface-rgb) / 0.36);
+  --glass-control-bg: rgb(var(--member-profile-accent-rgb) / 0.08);
+  --glass-hover-bg: rgb(var(--member-profile-accent-rgb) / 0.16);
+  --glass-active-bg: rgb(var(--member-profile-accent-rgb) / 0.14);
   width: min(304px, calc(100vw - 24px));
-  min-height: 308px;
-  border: 1px solid rgba(235, 247, 255, 0.22);
+  min-height: 326px;
+  border: 1px solid rgba(235, 247, 255, 0.24);
   border-radius: var(--floating-glass-radius);
-  background: transparent;
+  background:
+    var(--sidebar-pane-blur-texture),
+    radial-gradient(240px 180px at 18% 0%, rgba(235, 247, 255, 0.16), transparent 72%),
+    radial-gradient(
+      240px 220px at 92% 38%,
+      rgb(var(--member-profile-accent-rgb) / 0.16),
+      transparent 70%
+    ),
+    linear-gradient(
+      180deg,
+      rgb(var(--member-profile-surface-rgb) / 0.54),
+      rgb(var(--member-profile-surface-rgb) / 0.34)
+    ),
+    rgba(3, 9, 15, 0.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.62) brightness(1.02);
+  backdrop-filter: blur(28px) saturate(1.62) brightness(1.02);
   color: var(--ink);
   overflow: hidden;
   -webkit-clip-path: inset(0 round var(--floating-glass-radius));
@@ -4066,17 +4108,47 @@ video.attachment-preview {
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
+.member-profile-popout.liquid-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    radial-gradient(220px 170px at 16% 0%, rgba(235, 247, 255, 0.13), transparent 74%),
+    radial-gradient(
+      220px 190px at 92% 20%,
+      rgb(var(--member-profile-accent-rgb) / 0.12),
+      transparent 70%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.07),
+      transparent 46%,
+      rgb(var(--member-profile-accent-rgb) / 0.05)
+    );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -28px 46px rgba(4, 22, 34, 0.16);
+  opacity: 0.64;
+  pointer-events: none;
+}
+
 .member-profile-popout.liquid-surface > .member-profile-popout-banner {
   position: absolute;
   inset: 0 0 auto;
-  z-index: 0;
-  height: 112px;
+  z-index: 1;
+  height: var(--member-profile-banner-height);
   border-radius: var(--floating-glass-radius) var(--floating-glass-radius) 0 0;
   pointer-events: none;
   overflow: hidden;
   background:
     radial-gradient(140px 86px at 22% 10%, rgba(235, 247, 255, 0.18), transparent 70%),
-    linear-gradient(135deg, rgba(48, 180, 255, 0.24), rgba(110, 255, 191, 0.1));
+    linear-gradient(
+      135deg,
+      rgb(var(--member-profile-accent-rgb) / 0.28),
+      rgb(var(--member-profile-surface-rgb) / 0.24)
+    );
 }
 
 .member-profile-popout.liquid-surface > .member-profile-popout-banner::after {
@@ -4121,7 +4193,8 @@ video.attachment-preview {
 
 .member-profile-popout-body {
   position: relative;
-  padding: 76px 16px 18px;
+  z-index: 2;
+  padding: 78px 16px 18px;
   display: grid;
   gap: 12px;
 }
@@ -4129,7 +4202,7 @@ video.attachment-preview {
 .member-profile-popout-summary {
   display: grid;
   grid-template-columns: 84px minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 14px;
   min-width: 0;
 }
@@ -4143,8 +4216,8 @@ video.attachment-preview {
   display: grid;
   place-items: center;
   background:
-    linear-gradient(180deg, rgba(235, 247, 255, 0.12), rgba(48, 180, 255, 0.05)),
-    rgba(4, 14, 24, 0.5);
+    linear-gradient(180deg, rgba(235, 247, 255, 0.14), rgba(48, 180, 255, 0.05)),
+    rgba(4, 14, 24, 0.66);
   box-shadow:
     0 12px 28px rgba(0, 0, 0, 0.26),
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
@@ -4181,6 +4254,7 @@ video.attachment-preview {
 }
 
 .member-profile-popout-copy {
+  margin-top: calc(var(--member-profile-banner-height) - 78px + 8px);
   display: grid;
   gap: 4px;
   min-width: 0;
@@ -4215,6 +4289,90 @@ video.attachment-preview {
   white-space: pre-wrap;
 }
 
+.member-profile-audio-ipod {
+  min-width: 0;
+  min-height: 50px;
+  border: 1px solid rgba(48, 180, 255, 0.28);
+  border-radius: 8px;
+  padding: 8px 9px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, rgba(235, 247, 255, 0.055), rgba(48, 180, 255, 0.025)),
+    var(--glass-control-bg);
+  text-decoration: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.11);
+}
+
+.member-profile-audio-ipod:hover,
+.member-profile-audio-ipod:focus-visible {
+  outline: none;
+  border-color: rgba(110, 255, 191, 0.42);
+  background:
+    linear-gradient(180deg, rgba(235, 247, 255, 0.08), rgba(110, 255, 191, 0.035)),
+    var(--glass-hover-bg);
+}
+
+.member-profile-spotify-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: block;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.22));
+}
+
+.member-profile-audio-screen {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+
+.member-profile-audio-screen small {
+  color: var(--ink-muted);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.member-profile-audio-marquee {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-shadow: var(--glass-readable-shadow);
+}
+
+.member-profile-audio-marquee > span {
+  display: inline-block;
+  min-width: 100%;
+  padding-left: 100%;
+  animation: member-profile-audio-scroll 12s linear infinite;
+}
+
+@keyframes member-profile-audio-scroll {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .member-profile-audio-marquee > span {
+    padding-left: 0;
+    animation: none;
+  }
+}
+
 .member-profile-popout-actions {
   display: flex;
   min-width: 0;
@@ -4226,9 +4384,9 @@ video.attachment-preview {
   border: 1px solid rgba(48, 180, 255, 0.28);
   border-radius: 8px;
   padding: 8px 10px;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
-  justify-content: center;
   gap: 7px;
   color: var(--ink);
   background:
@@ -4246,6 +4404,7 @@ video.attachment-preview {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
 }
 
 .member-profile-popout-bsky-logo {
@@ -4265,6 +4424,8 @@ video.attachment-preview {
 }
 
 .member-profile-popout-actions > span.member-profile-popout-action {
+  grid-template-columns: 1fr;
+  justify-items: center;
   color: var(--ink-soft);
   border-color: rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.05);
@@ -4275,6 +4436,33 @@ video.attachment-preview {
   align-items: center;
   gap: 10px;
   min-width: 0;
+}
+
+.member-avatar-wrap {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+}
+
+.member-music-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 21px;
+  height: 21px;
+  border: 2px solid rgba(10, 16, 24, 0.82);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+}
+
+.member-music-badge img {
+  width: 17px;
+  height: 17px;
+  display: block;
+  pointer-events: none;
 }
 
 .member-text {
@@ -5712,8 +5900,7 @@ textarea.action-modal-input {
   flex: 0 0 auto;
   border: 1px solid rgba(235, 247, 255, 0.32);
   border-radius: 999px;
-  background-image:
-    radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.46), transparent 32%);
+  background-image: radial-gradient(circle at 32% 24%, rgba(255, 255, 255, 0.46), transparent 32%);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 8px 18px rgba(0, 0, 0, 0.22);
@@ -7729,15 +7916,49 @@ select option {
 }
 
 .member-profile-liquid-glass .glass__warp {
-  background: rgba(226, 248, 255, 0.035);
-  -webkit-backdrop-filter: blur(24px) saturate(1.55) brightness(0.94) !important;
-  backdrop-filter: blur(24px) saturate(1.55) brightness(0.94) !important;
+  background:
+    radial-gradient(210px 170px at 18% 2%, rgba(235, 247, 255, 0.18), transparent 72%),
+    radial-gradient(
+      260px 220px at 90% 34%,
+      rgb(var(--member-profile-accent-rgb) / 0.18),
+      transparent 72%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.1),
+      transparent 45%,
+      rgb(var(--member-profile-accent-rgb) / 0.06)
+    ),
+    linear-gradient(
+      180deg,
+      rgb(var(--member-profile-surface-rgb) / 0.3),
+      rgb(var(--member-profile-surface-rgb) / 0.38)
+    );
+  -webkit-backdrop-filter: blur(38px) saturate(1.92) brightness(1.06) !important;
+  backdrop-filter: blur(38px) saturate(1.92) brightness(1.06) !important;
 }
 
 .member-profile-popout.over-light-background .member-profile-liquid-glass .glass__warp {
-  background: rgba(7, 24, 40, 0.07);
-  -webkit-backdrop-filter: blur(26px) saturate(1.42) brightness(0.84) !important;
-  backdrop-filter: blur(26px) saturate(1.42) brightness(0.84) !important;
+  background:
+    radial-gradient(210px 170px at 18% 2%, rgba(255, 255, 255, 0.18), transparent 72%),
+    radial-gradient(
+      260px 220px at 90% 34%,
+      rgb(var(--member-profile-accent-rgb) / 0.16),
+      transparent 72%
+    ),
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.09),
+      transparent 45%,
+      rgb(var(--member-profile-accent-rgb) / 0.05)
+    ),
+    linear-gradient(
+      180deg,
+      rgb(var(--member-profile-surface-rgb) / 0.34),
+      rgb(var(--member-profile-surface-rgb) / 0.46)
+    );
+  -webkit-backdrop-filter: blur(38px) saturate(1.72) brightness(0.94) !important;
+  backdrop-filter: blur(38px) saturate(1.72) brightness(0.94) !important;
 }
 
 .menu-liquid-glass .glass__warp {

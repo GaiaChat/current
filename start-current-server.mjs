@@ -7,6 +7,7 @@ import { networkInterfaces } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { printGaiaChatBanner } from './gaia-chat-banner.mjs';
 
 function hasCurrentManifest(dir) {
   return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
@@ -100,31 +101,8 @@ function maybeRedirectToPortableCurrent() {
   process.exit(result.status ?? 1);
 }
 
-function readCurrentVersion() {
-  for (const filePath of [releaseInfoPath, join(rootDir, 'package.json')]) {
-    try {
-      const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-      if (typeof parsed.version === 'string' && parsed.version.trim()) {
-        return parsed.version.trim();
-      }
-    } catch {
-      // Keep looking.
-    }
-  }
-  return 'dev';
-}
-
+printGaiaChatBanner(rootDir);
 maybeRedirectToPortableCurrent();
-
-function printGaiaChatBanner() {
-  console.log('  ____       _       ____ _           _');
-  console.log(' / ___| __ _(_) __ _/ ___| |__   __ _| |_');
-  console.log("| |  _ / _` | |/ _` | |   | '_ \\ / _` | __|");
-  console.log('| |_| | (_| | | (_| | |___| | | | (_| | |_');
-  console.log(' \\____|\\__,_|_|\\__,_|\\____|_| |_|\\__,_|\\__|');
-  console.log(`Gaia Chat Version ${readCurrentVersion()}`);
-  console.log('');
-}
 
 function commandName(name) {
   return isWindows ? `${name}.cmd` : name;
@@ -1304,8 +1282,6 @@ async function buildForNormalMode(pm, releaseBundle) {
 }
 
 async function main() {
-  printGaiaChatBanner();
-
   if (!existsSync(join(rootDir, 'package.json'))) {
     throw new Error(`Could not find Current repo root from ${rootDir}`);
   }

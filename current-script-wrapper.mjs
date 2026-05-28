@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { printGaiaChatBanner } from './gaia-chat-banner.mjs';
 
 function hasCurrentManifest(dir) {
   return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
@@ -64,6 +65,9 @@ export async function runCurrentScript(options) {
   const scriptPath = join(rootDir, options.script);
   const args = [...(options.defaultArgs ?? []), ...filteredArgs()];
   const helpRequested = args.includes('--help') || args.includes('-h');
+  if (options.banner && !helpRequested) {
+    printGaiaChatBanner(rootDir);
+  }
   const result = await runNodeScript(scriptPath, args);
   const exitCode = result.code ?? (result.signal ? 1 : 0);
 

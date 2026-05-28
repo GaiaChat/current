@@ -223,6 +223,7 @@ async function stageBundle() {
     'assets',
     'deploy/current.service',
     'current-script-wrapper.mjs',
+    'gaia-chat-banner.mjs',
     'install-current.mjs',
     'install-local-current.mjs',
     'start-current-server.mjs',
