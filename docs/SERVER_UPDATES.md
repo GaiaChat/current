@@ -70,14 +70,14 @@ and `apps/server/uploads` for development or one-click local testing.
 
 Portable release bundles use the folder beside the extracted
 `current-server-v<version>` directory as their install root. For example,
-running `Update Current` from `/mnt/SSD4TB/current-server-v0.3.5` stages future
+running `Update Current.mjs` from `/mnt/SSD4TB/current-server-v0.3.5` stages future
 releases under `/mnt/SSD4TB/versions`, preserves local config, data, uploads,
 and backups, then activates `/mnt/SSD4TB/current`.
 
 If that drive supports symlinks, `current` points at the active version. On
 symlinkless portable filesystems such as exFAT, the updater copies the active
 release into a real `current` directory and moves the previous active directory
-aside as `previous-current-<timestamp>`. Old versioned launch scripts are
+aside as `previous-current-<timestamp>`. Old versioned launchers are
 refreshed so launching them redirects to `current` instead of staying pinned to
 the old extracted folder.
 
@@ -85,6 +85,8 @@ the old extracted folder.
 
 For one-click local servers:
 
+- Use the root Node launchers: `Install Current.mjs`, `Run Current.mjs`, and
+  `Update Current.mjs`.
 - Check the manifest before the normal-mode build/start step.
 - Prompt in TTY launches: `Update available: vX.Y.Z. Install now?`.
 - Skip update checks for dev mode unless explicitly requested.
@@ -95,7 +97,8 @@ For one-click local servers:
 For systemd installs:
 
 - Run `sudo pnpm update:server` from a checkout or
-  `sudo node /opt/current/current/scripts/update-current-server.mjs`.
+  `sudo node "Update Current.mjs"` from a checkout or
+  `sudo node /opt/current/current/update-current-server.mjs`.
 - Restart `current.service` only after the new version is staged and verified.
 - On failure, keep running the old version and report the failed stage.
 

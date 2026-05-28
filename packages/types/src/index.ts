@@ -48,10 +48,26 @@ export interface ServerAppearance {
 export type UserPresenceStatus = 'online' | 'away' | 'dnd' | 'invisible';
 export type UserPresenceDisplayStatus = UserPresenceStatus | 'offline';
 
+export interface UserAudioActivity {
+  provider: 'spotify';
+  title: string;
+  artists: string[];
+  album?: string;
+  albumArtUrl?: string;
+  trackUrl?: string;
+  isPlaying: boolean;
+  progressMs?: number;
+  durationMs?: number;
+  startedAt?: ISODate;
+  updatedAt: ISODate;
+  expiresAt: ISODate;
+}
+
 export interface UserPresence {
   userId: string;
   status: UserPresenceDisplayStatus;
   connected: boolean;
+  audioActivity?: UserAudioActivity;
 }
 
 export interface CurrentServer {

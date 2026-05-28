@@ -11,7 +11,7 @@ Current is a local-first, Discord-style chat platform with browser + Electron cl
 - Voice channel signaling and state (WebRTC SFU-ready config surface)
 - Strong moderation baseline: roles, automod rules, invite controls, moderation actions, audit logs
 - Setup wizard and admin studio UI
-- Cross-platform local install/run launchers, plus Linux `systemd` hosting scripts
+- Cross-platform Node `.mjs` install/run/update launchers, plus Linux `systemd` hosting scripts
 
 ## Monorepo Structure
 
@@ -33,51 +33,19 @@ Current is a local-first, Discord-style chat platform with browser + Electron cl
 
 ## Quick Start
 
-Install Node.js 20 or newer first. The setup scripts run the pinned project package manager, `pnpm@11.3.0`, through `npx` or `corepack` when needed.
+Install Node.js 20 or newer first. The setup scripts run the pinned project package manager, `pnpm@11.3.0`, through `npx` or `corepack` when needed. The root `.mjs` launchers are the same on Windows, macOS, and Linux:
 
-### Windows
-
-Double-click:
-
-1. `Install Current.cmd`
-2. `Current Server.cmd`
-
-Terminal equivalent:
-
-```cmd
-node scripts\install-local-current.mjs
-node scripts\start-current-server.mjs
-```
-
-### macOS
-
-Double-click:
-
-1. `Install Current.command`
-2. `Current Server.command`
-
-If macOS blocks the script the first time, right-click it and choose Open, or run:
-
-```bash
-chmod +x "Install Current.command" "Current Server.command"
-./Install\ Current.command
-./Current\ Server.command
-```
-
-### Linux
-
-Double-click:
-
-1. `Install Current Linux.sh`
-2. `Current Server Linux.desktop`, or `Current Server Linux.sh` if your desktop environment prefers shell launchers
+1. `Install Current.mjs`
+2. `Run Current.mjs`
 
 Terminal equivalent:
 
 ```bash
-chmod +x "Install Current Linux.sh" "Current Server Linux.sh"
-./Install\ Current\ Linux.sh
-./Current\ Server\ Linux.sh
+node "Install Current.mjs"
+node "Run Current.mjs"
 ```
+
+Some desktops open `.mjs` files in an editor instead of executing them; running them with `node` is the reliable path everywhere.
 
 The run launcher asks how to start, checks first-time setup, installs dependencies only when `node_modules` is missing or dependencies changed, starts the server in a terminal, and keeps the terminal attached so you can stop it with `Ctrl+C`.
 It will ask which server instance to run:
@@ -97,7 +65,7 @@ Open `http://127.0.0.1:6414` for the standard instance, or `http://127.0.0.1:808
 Manual equivalent:
 
 ```bash
-pnpm setup
+pnpm run setup
 pnpm launch:server:normal
 # or
 pnpm launch:server:dev
@@ -110,7 +78,7 @@ To use a different port for one launch, pass `--port` or set `CURRENT_PORT`:
 ```bash
 pnpm launch:server:normal -- --port 7000
 pnpm dev -- --port 7000
-CURRENT_PORT=7000 ./Current\ Server\ Linux.sh
+CURRENT_PORT=7000 node "Run Current.mjs"
 ```
 
 For internet hosting, forward TCP `6414` to the machine running the standard server unless you changed `server.port`. Voice also uses the configured UDP range, `40000-40100` by default. The LAN instance uses TCP `8081` by default.
@@ -153,7 +121,7 @@ Use a `127.0.0.1` callback URL for local testing.
 ## Linux Native Install (`systemd`)
 
 ```bash
-sudo ./scripts/install-current.sh
+sudo node install-current.mjs
 ```
 
 This installs runtime dependencies with a symlink-safe layout, writes `/etc/systemd/system/current.service`, and starts the service.
@@ -170,15 +138,17 @@ This writes a runtime-focused `release-server/current-server-v<version>.tar.gz` 
 
 ```bash
 sudo pnpm update:server
+# or
+sudo node "Update Current.mjs"
 ```
 
 This downloads the latest server release, verifies its SHA-256, backs up config
 and SQLite, stages the new app under `/opt/current/versions`, and restarts the
 systemd service without overwriting messages, settings, uploads, or backups.
 When run from an extracted portable bundle such as
-`current-server-v0.3.5`, the updater stages releases next to that bundle
+`current-server-v0.3.5`, `Update Current.mjs` stages releases next to that bundle
 instead. If the drive cannot create symlinks, it keeps a real `current`
-directory there so the one-click launchers start the active version.
+directory there so the root launchers start the active version.
 See [docs/SERVER_UPDATES.md](docs/SERVER_UPDATES.md) for the rollout/apply
 design.
 
