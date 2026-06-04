@@ -29,8 +29,23 @@ const releaseDir = resolve(rootDir, process.env.CURRENT_SERVER_RELEASE_DIR || 'r
 const stageRoot = join(releaseDir, '.stage');
 const bundleName = `current-server-v${version}`;
 const bundleDir = join(stageRoot, bundleName);
-const archiveName = `${bundleName}.tar.gz`;
-const archivePath = join(releaseDir, archiveName);
+const releasePlatforms = [
+  {
+    platform: 'linux',
+    arch: 'any',
+    archiveName: `${bundleName}-linux.tar.gz`,
+  },
+  {
+    platform: 'macos',
+    arch: 'any',
+    archiveName: `${bundleName}-macos.tar.gz`,
+  },
+  {
+    platform: 'windows',
+    arch: 'any',
+    archiveName: `${bundleName}-windows.tar.gz`,
+  },
+];
 const manifestName =
   channel === 'stable' ? 'current-server-latest.json' : `current-server-${channel}.json`;
 const manifestPath = join(releaseDir, manifestName);
@@ -301,13 +316,34 @@ async function stageBundle() {
 
 async function packBundle() {
   await mkdir(releaseDir, { recursive: true });
-  await rm(archivePath, { force: true });
-  await run('tar', ['-czf', archivePath, '-C', stageRoot, bundleName], 'server release archive');
+  for (const releasePlatform of releasePlatforms) {
+    const archivePath = join(releaseDir, releasePlatform.archiveName);
+    await rm(archivePath, { force: true });
+    await run(
+      'tar',
+      ['-czf', archivePath, '-C', stageRoot, bundleName],
+      `${releasePlatform.platform} server release archive`,
+    );
+  }
 }
 
 async function writeManifest() {
-  const archiveStats = await stat(archivePath);
-  const digest = await sha256(archivePath);
+  const assets = [];
+  for (const releasePlatform of releasePlatforms) {
+    const archivePath = join(releaseDir, releasePlatform.archiveName);
+    const archiveStats = await stat(archivePath);
+    const digest = await sha256(archivePath);
+    assets.push({
+      platform: releasePlatform.platform,
+      arch: releasePlatform.arch,
+      name: releasePlatform.archiveName,
+      url: releaseAssetUrl(releasePlatform.archiveName),
+      sha256: digest,
+      size: archiveStats.size,
+      root: bundleName,
+    });
+  }
+
   const manifest = {
     schemaVersion: 1,
     name: 'current-server',
@@ -317,16 +353,7 @@ async function writeManifest() {
     releasedAt: new Date().toISOString(),
     manifestUrl: releaseAssetUrl(manifestName),
     minimumNode: '20.0.0',
-    assets: [
-      {
-        platform: 'linux',
-        arch: 'any',
-        name: archiveName,
-        url: releaseAssetUrl(archiveName),
-        sha256: digest,
-        size: archiveStats.size,
-      },
-    ],
+    assets,
     install: {
       preserve: [
         '/etc/current/current.config.json',
@@ -342,7 +369,9 @@ async function writeManifest() {
   };
 
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`[Current release] Wrote ${basename(archivePath)}`);
+  for (const asset of assets) {
+    console.log(`[Current release] Wrote ${asset.name}`);
+  }
   console.log(`[Current release] Wrote ${basename(manifestPath)}`);
 }
 

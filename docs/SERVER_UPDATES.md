@@ -13,8 +13,10 @@ Use GitHub Releases on `GaiaChat/current` as the first update channel:
 2. Run `pnpm release:server`.
 3. Push a `current-server-v<version>` tag or run the
    `Publish Current Server Release` GitHub Actions workflow.
-4. Keep `current-server-latest.json` and the matching
-   `current-server-v<version>.tar.gz` together in that release.
+4. Keep `current-server-latest.json` and the matching platform archives
+   (`current-server-v<version>-linux.tar.gz`,
+   `current-server-v<version>-macos.tar.gz`, and
+   `current-server-v<version>-windows.tar.gz`) together in that release.
 
 The default release script points update clients at:
 
@@ -22,11 +24,11 @@ The default release script points update clients at:
 https://github.com/GaiaChat/current/releases/latest/download/current-server-latest.json
 ```
 
-The generated manifest gives update clients the version, archive URL, size, and
-SHA-256 digest. The archive intentionally excludes local config, SQLite data,
-uploads, backups, and `node_modules`. Release archives are runtime packages, not
-workspace checkouts, so first-run dependency installs avoid pnpm workspace
-symlinks on mounted or Windows-backed filesystems.
+The generated manifest gives update clients the version, platform archive URL,
+size, SHA-256 digest, and extraction root. The archives intentionally exclude
+local config, SQLite data, uploads, backups, and `node_modules`. Release
+archives are runtime packages, not workspace checkouts, so first-run dependency
+installs avoid pnpm workspace symlinks on mounted or Windows-backed filesystems.
 
 ## Server-Side Update Flow
 

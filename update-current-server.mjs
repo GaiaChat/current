@@ -440,11 +440,25 @@ async function repairPortableCurrentIfNeeded(options, latestVersion) {
   return true;
 }
 
-function selectLinuxAsset(manifest) {
+function currentPlatformId() {
+  if (process.platform === 'darwin') {
+    return 'macos';
+  }
+  if (process.platform === 'win32') {
+    return 'windows';
+  }
+  return 'linux';
+}
+
+function selectPlatformAsset(manifest) {
+  const platform = currentPlatformId();
   const assets = Array.isArray(manifest.assets) ? manifest.assets : [];
-  const asset = assets.find((candidate) => candidate?.platform === 'linux') ?? assets[0];
+  const asset =
+    assets.find((candidate) => candidate?.platform === platform) ??
+    assets.find((candidate) => candidate?.platform === 'linux') ??
+    assets[0];
   if (!asset || typeof asset.url !== 'string' || typeof asset.sha256 !== 'string') {
-    throw new Error('The update manifest does not contain a usable Linux asset.');
+    throw new Error(`The update manifest does not contain a usable ${platform} asset.`);
   }
   return asset;
 }
@@ -818,9 +832,12 @@ async function main(options) {
     return;
   }
 
-  const asset = selectLinuxAsset(manifest);
+  const asset = selectPlatformAsset(manifest);
   const assetUrl = resolveAssetUrl(options.manifestUrl, asset.url);
-  const archiveRoot = basename(asset.name || assetUrl).replace(/\.tar\.gz$/, '');
+  const archiveRoot =
+    typeof asset.root === 'string' && asset.root.trim()
+      ? asset.root.trim()
+      : basename(asset.name || assetUrl).replace(/\.tar\.gz$/, '');
   const cacheDir = join(options.stateDir, 'update-cache');
   await mkdir(cacheDir, { recursive: true });
   const archivePath = join(cacheDir, asset.name || `${archiveRoot}.tar.gz`);
