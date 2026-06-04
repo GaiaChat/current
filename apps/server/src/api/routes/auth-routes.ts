@@ -1035,6 +1035,17 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
           }
         }
 
+        if (!app.appContext.serverConfig.get().auth.lanRedirectBaseUrl.trim()) {
+          reply.code(400).send({
+            error: {
+              code: 'LAN_HANDOFF_NOT_CONFIGURED',
+              message:
+                'This HTTP server is using loopback ATProto OAuth. LAN handoff is disabled until a LAN handoff base URL is configured in Server Settings.',
+            },
+          });
+          return;
+        }
+
         const now = Date.now();
         const state: LanHandoffState = {
           id: id('oauth_handoff'),
