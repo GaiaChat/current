@@ -8644,8 +8644,7 @@ export function App() {
               {voiceClient.status === 'requesting_microphone' && 'Requesting microphone'}
               {voiceClient.status === 'connecting' && 'Connecting voice'}
               {voiceClient.status === 'reconnecting' && 'Recovering voice'}
-              {voiceClient.status === 'permission_denied' && 'Microphone blocked'}
-              {voiceClient.status === 'insecure_origin' && 'HTTPS required for browser voice'}
+              {voiceClient.status === 'permission_denied' && (voiceClient.error ?? 'Microphone blocked')}
               {voiceClient.status === 'failed' && (voiceClient.error ?? 'Voice connection failed')}
             </div>
           )}

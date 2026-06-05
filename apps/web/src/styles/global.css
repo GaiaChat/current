@@ -1498,7 +1498,6 @@ select {
 }
 
 .voice-status-permission_denied,
-.voice-status-insecure_origin,
 .voice-status-failed {
   border-color: rgba(255, 107, 126, 0.4);
   color: var(--danger);

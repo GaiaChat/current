@@ -636,7 +636,9 @@ export function useVoiceScreenShareClient({
     channelSharePath: (channelId) => `/api/v1/voice/channels/${channelId}/screen-shares`,
     createCaptureStream: async (settings) => {
       if (!navigator.mediaDevices?.getDisplayMedia) {
-        throw new Error('Screen sharing is not supported in this browser.');
+        throw new Error(
+          'Screen sharing is not available in this browser or HTTP origin. Try localhost, the desktop app, or HTTPS.',
+        );
       }
       return navigator.mediaDevices.getDisplayMedia(createDisplayMediaOptions(settings));
     },
@@ -676,7 +678,9 @@ export function useVoiceCameraShareClient({
     channelSharePath: (channelId) => `/api/v1/voice/channels/${channelId}/camera-shares`,
     createCaptureStream: async (settings) => {
       if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Camera sharing is not supported in this browser.');
+        throw new Error(
+          'Camera sharing is not available in this browser or HTTP origin. Try localhost, the desktop app, or HTTPS.',
+        );
       }
       const constraints = createCameraConstraints(settings, videoSettings, true);
       return navigator.mediaDevices.getUserMedia({ video: constraints, audio: false }).catch((error) => {
