@@ -15,6 +15,7 @@ import { VoiceService } from './voice/voice-service.js';
 import type { VoiceSfuAdapter } from './voice/voice-sfu-types.js';
 import { VoiceMediaShareService } from './voice/voice-media-share-service.js';
 import { GatewayService } from './realtime/gateway-service.js';
+import { AcmeService, type AcmeModuleLoader } from './services/acme-service.js';
 import type { AppContext } from './types/context.js';
 import { GatewayEvents } from '@current/protocol';
 
@@ -23,10 +24,12 @@ export function createAppContext(input: {
   configPath: string;
   config: CurrentConfig;
   voiceSfu?: VoiceSfuAdapter;
+  acmeModuleLoader?: AcmeModuleLoader;
 }): AppContext {
   const repos = createRepositories(input.db);
   const metrics = new MetricsService();
   const serverConfig = new ServerConfigService(input.configPath, input.config);
+  const acme = new AcmeService(serverConfig, input.configPath, input.acmeModuleLoader);
   const auth = new AuthService(repos, serverConfig);
   const setup = new SetupService(repos, serverConfig, input.db);
   const moderation = new ModerationService(repos, metrics);
@@ -86,5 +89,6 @@ export function createAppContext(input: {
     cameraShare,
     gateway,
     serverConfig,
+    acme,
   };
 }

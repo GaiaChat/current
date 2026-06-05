@@ -24,7 +24,11 @@ Pagination defaults and caps:
 ## Setup
 
 - `GET /setup/status` (includes `authMode: "atproto" | "lan"`)
-- `POST /setup/bootstrap`
+- `POST /setup/bootstrap` (accepts `serverAddress` plus deprecated `publicUrl`)
+- `POST /setup/owner/code` (host-local owner verification code generation)
+- `POST /setup/owner/claim` (signed-in owner claim with terminal verification code)
+- `GET /setup/https/acme/status`
+- `POST /setup/https/acme/issue` (pre-owner HTTPS setup with host access or owner code)
 
 ## Auth
 
@@ -48,6 +52,9 @@ Pagination defaults and caps:
 - `GET /members?limit=100&after=<cursor>` (paginated)
 - `GET /admin/settings` (includes `auth.lanRedirectBaseUrl` for LAN OAuth handoff links)
 - `PATCH /admin/settings` (supports `authMode`, `lanRedirectBaseUrl`, `registrationMode`, and `klipyApiKey`)
+- `GET /admin/https/acme/status`
+- `POST /admin/https/acme/issue`
+- `POST /admin/https/acme/renew`
 - `POST /admin/ownership/transfer`
 - `GET /admin/moderation/logs`
 - `GET /admin/shared-ips`

@@ -165,10 +165,14 @@ async function writeReleaseRootPackage() {
     type: 'module',
     description: packageJson.description,
     packageManager: packageJson.packageManager,
+    engines: {
+      node: '>=24.0.0',
+    },
     scripts: {
       start: 'node apps/server/dist/index.js',
       'launch:server': 'node "Run Current.mjs" --no-pause',
       'update:server': 'node "Update Current.mjs" --no-pause',
+      'bootstrap:server': 'node bootstrap-current-server.mjs',
       setup: 'node "Install Current.mjs" --no-pause',
     },
     dependencies,
@@ -235,6 +239,7 @@ async function stageBundle() {
     'Install Current.mjs',
     'Run Current.mjs',
     'Update Current.mjs',
+    'bootstrap-current-server.mjs',
     'assets',
     'deploy/current.service',
     'current-script-wrapper.mjs',
@@ -352,7 +357,7 @@ async function writeManifest() {
     repository: releaseRepository,
     releasedAt: new Date().toISOString(),
     manifestUrl: releaseAssetUrl(manifestName),
-    minimumNode: '20.0.0',
+    minimumNode: '24.0.0',
     assets,
     install: {
       preserve: [

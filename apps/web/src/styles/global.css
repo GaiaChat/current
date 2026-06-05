@@ -5427,6 +5427,20 @@ textarea.action-modal-input {
   cursor: wait;
 }
 
+.settings-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-inline-claim-code {
+  display: grid;
+  gap: 6px;
+  justify-self: start;
+  width: min(100%, 320px);
+  text-align: left;
+}
+
 .settings-warning-backdrop {
   position: absolute;
   inset: 0;

@@ -23,6 +23,7 @@ import {
 } from '../../services/access-control.js';
 import { LOOPBACK_REMOTE_RETURN_TO_CODE } from '../../auth/auth-service.js';
 import { id } from '../../utils/id.js';
+import { deriveDiscoverableClientIdFromPublicUrl } from '../../utils/request-url.js';
 import { buildPublicServerPayload } from './server-payload.js';
 import { isSafeAuthRedirectTarget } from '../origin-guard.js';
 
@@ -236,27 +237,6 @@ function deleteLanHandoff(app: FastifyInstance, handoffId: string): void {
 
 function isLanHandoffExpired(state: LanHandoffState): boolean {
   return Date.now() > state.expiresAt;
-}
-
-function deriveDiscoverableClientIdFromPublicUrl(publicUrl: string): string | null {
-  try {
-    const parsed = new URL(publicUrl);
-    if (parsed.protocol !== 'https:') {
-      return null;
-    }
-    if (parsed.hostname === 'localhost' || parsed.hostname === '::1') {
-      return null;
-    }
-    if (isIP(parsed.hostname)) {
-      return null;
-    }
-    if (!parsed.hostname.includes('.') || parsed.hostname.endsWith('.local')) {
-      return null;
-    }
-    return new URL('/api/v1/auth/client-metadata.json', parsed).toString();
-  } catch {
-    return null;
-  }
 }
 
 function toSearchParams(raw: unknown): URLSearchParams {
@@ -608,6 +588,17 @@ function resolveDpopHtu(request: FastifyRequest): string {
   url.search = '';
   url.hash = '';
   return url.toString();
+}
+
+function shouldUseSecureSessionCookie(request: FastifyRequest): boolean {
+  const forwardedProto = firstCsvHeaderValue(request.headers['x-forwarded-proto'])?.toLowerCase();
+  if (forwardedProto === 'https') {
+    return true;
+  }
+  if (forwardedProto === 'http') {
+    return false;
+  }
+  return request.protocol === 'https';
 }
 
 function readDpopAuthorization(request: FastifyRequest): string | null {
@@ -1383,7 +1374,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       const response = reply.setCookie('current_session', result.sessionToken, {
         httpOnly: true,
         sameSite: 'lax',
-        secure: false,
+        secure: shouldUseSecureSessionCookie(request),
         path: '/',
         maxAge: 60 * 60 * 24,
       });
@@ -1465,6 +1456,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       app.appContext.serverConfig.get().auth.mode === 'lan' && isRequestFromHostMachine(request);
     let user = app.appContext.setup.ensureOwnerForUser(request.currentUser, {
       allowLanOwnershipRecovery,
+      allowAutomaticOwnership: isRequestFromHostMachine(request),
     });
 
     const status = app.appContext.setup.status();
@@ -1811,7 +1803,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
         .setCookie('current_session', result.sessionToken, {
           httpOnly: true,
           sameSite: 'lax',
-          secure: false,
+          secure: shouldUseSecureSessionCookie(request),
           path: '/',
           maxAge: 60 * 60 * 24,
         })
@@ -1855,15 +1847,17 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const result = app.appContext.auth.lanLogin(parsed.data);
+      const hostRequest = isRequestFromHostMachine(request);
       const user = app.appContext.setup.ensureOwnerForUser(result.user, {
-        allowLanOwnershipRecovery: isRequestFromHostMachine(request),
+        allowLanOwnershipRecovery: hostRequest,
+        allowAutomaticOwnership: hostRequest,
       });
       broadcastMemberJoined(app, { ...result, user });
       reply
         .setCookie('current_session', result.sessionToken, {
           httpOnly: true,
           sameSite: 'lax',
-          secure: false,
+          secure: shouldUseSecureSessionCookie(request),
           path: '/',
           maxAge: 60 * 60 * 24,
         })
@@ -1909,15 +1903,17 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const result = app.appContext.auth.devLogin(parsed.data);
+    const hostRequest = isRequestFromHostMachine(request);
     const user = app.appContext.setup.ensureOwnerForUser(result.user, {
-      allowLanOwnershipRecovery: isRequestFromHostMachine(request),
+      allowLanOwnershipRecovery: hostRequest,
+      allowAutomaticOwnership: hostRequest,
     });
     broadcastMemberJoined(app, { ...result, user });
     reply
       .setCookie('current_session', result.sessionToken, {
         httpOnly: true,
         sameSite: 'lax',
-        secure: false,
+        secure: shouldUseSecureSessionCookie(request),
         path: '/',
         maxAge: 60 * 60 * 24,
       })
@@ -1975,7 +1971,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     reply.setCookie('current_session', payload.sessionToken, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: false,
+      secure: shouldUseSecureSessionCookie(request),
       path: '/',
       maxAge: 60 * 60 * 24,
     });

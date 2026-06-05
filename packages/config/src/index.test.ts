@@ -9,6 +9,7 @@ describe('config schema', () => {
     expect(config.server.publicUrl).toBe('http://localhost:6414');
     expect(config.server.registrationMode).toBe('invite_only');
     expect(config.server.tls.enabled).toBe(false);
+    expect(config.server.tls.acme.mode).toBe('off');
     expect(config.auth.mode).toBe('atproto');
     expect(config.auth.redirectUri).toBe('http://localhost:6414/api/v1/auth/oauth/callback');
     expect(config.auth.lanRedirectBaseUrl).toBe('');

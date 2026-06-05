@@ -1,19 +1,10 @@
 import { isIP } from 'node:net';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { CurrentConfig } from '@current/config';
+import { firstCsvHeaderValue, firstHeaderValue } from '../utils/request-url.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const LOOPBACK_DEV_PORTS = new Set(['5173', '4173']);
-
-function firstHeaderValue(value: string | string[] | undefined): string | undefined {
-  if (typeof value === 'string') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.find((entry) => entry.trim().length > 0);
-  }
-  return undefined;
-}
 
 function parseHttpUrl(value: string): URL | null {
   try {
@@ -32,6 +23,10 @@ function parseHostHeader(value: string | undefined): URL | null {
     return null;
   }
   return parseHttpUrl(`http://${value}`);
+}
+
+function requestHostHeader(request: FastifyRequest): string | undefined {
+  return firstCsvHeaderValue(request.headers['x-forwarded-host']) ?? firstHeaderValue(request.headers.host);
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -138,7 +133,7 @@ export async function rejectDisallowedBrowserOrigin(
 
   if (isAllowedRequestOrigin({
     origin: request.headers.origin,
-    host: request.headers.host,
+    host: requestHostHeader(request),
     config: request.server.appContext.serverConfig.get(),
   })) {
     return;

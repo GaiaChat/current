@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 const defaultRepository = 'GaiaChat/current';
 const defaultManifestUrl = `https://github.com/${defaultRepository}/releases/latest/download/current-server-latest.json`;
 const fallbackPnpmVersion = process.env.CURRENT_PNPM_VERSION || '11.3.0';
+const minimumNodeVersion = '24.0.0';
 
 function hasCurrentManifest(dir) {
   return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
@@ -90,6 +91,7 @@ const requiredReleaseFiles = [
   'Install Current.mjs',
   'Run Current.mjs',
   'Update Current.mjs',
+  'bootstrap-current-server.mjs',
   'update-current-server.mjs',
   'start-current-server.mjs',
   'install-local-current.mjs',
@@ -108,6 +110,7 @@ const portableRefreshedScriptFiles = [
   'Install Current.mjs',
   'Run Current.mjs',
   'Update Current.mjs',
+  'bootstrap-current-server.mjs',
   'current-script-wrapper.mjs',
   'update-current-server.mjs',
   'start-current-server.mjs',
@@ -326,6 +329,38 @@ function commandStdout(command, args = ['--version']) {
     return '';
   }
   return result.stdout.trim();
+}
+
+function parseVersionParts(version) {
+  return version
+    .split('.')
+    .map((part) => Number(part))
+    .map((part) => (Number.isInteger(part) && part >= 0 ? part : 0));
+}
+
+function compareVersions(left, right) {
+  const leftParts = parseVersionParts(left);
+  const rightParts = parseVersionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+function ensureNodeVersion() {
+  if (compareVersions(process.versions.node, minimumNodeVersion) < 0) {
+    throw new Error(
+      `Node.js ${minimumNodeVersion}+ is required. Current Node.js is ${process.versions.node}.`,
+    );
+  }
 }
 
 async function pathExists(path) {
@@ -561,24 +596,40 @@ async function backupServerState(options) {
 }
 
 function packageManager() {
+  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  const installedPnpmVersion = commandStdout(pnpm);
+  if (installedPnpmVersion === fallbackPnpmVersion) {
+    return [pnpm, []];
+  }
+
+  const corepack = process.platform === 'win32' ? 'corepack.cmd' : 'corepack';
+  if (commandWorks(corepack, ['--version'])) {
+    spawnSync(corepack, ['enable'], {
+      cwd: scriptRoot,
+      stdio: 'ignore',
+    });
+    const prepare = spawnSync(corepack, ['prepare', `pnpm@${fallbackPnpmVersion}`, '--activate'], {
+      cwd: scriptRoot,
+      stdio: 'ignore',
+    });
+    if (prepare.status === 0) {
+      return [corepack, ['pnpm']];
+    }
+  }
+
   const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
   if (commandWorks(npx)) {
     return [npx, ['--yes', `pnpm@${fallbackPnpmVersion}`]];
   }
-  const corepack = process.platform === 'win32' ? 'corepack.cmd' : 'corepack';
-  if (commandWorks(corepack)) {
-    spawnSync(corepack, ['prepare', `pnpm@${fallbackPnpmVersion}`, '--activate'], {
-      cwd: scriptRoot,
-      stdio: 'ignore',
-    });
-    return [corepack, ['pnpm']];
+
+  if (installedPnpmVersion) {
+    throw new Error(
+      `Found pnpm ${installedPnpmVersion}, but this release pins pnpm ${fallbackPnpmVersion}. Enable corepack or install the pinned pnpm version.`,
+    );
   }
-  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-  if (commandStdout(pnpm) === fallbackPnpmVersion) {
-    return [pnpm, []];
-  }
+
   throw new Error(
-    `Could not find pnpm, corepack, or npx. Install Node.js 20+ and enable corepack, or install pnpm ${fallbackPnpmVersion}.`,
+    `Could not find pnpm, corepack, or npx. Install Node.js ${minimumNodeVersion}+ and enable corepack, or install pnpm ${fallbackPnpmVersion}.`,
   );
 }
 
@@ -792,6 +843,7 @@ async function restartService(shouldRestart) {
 }
 
 async function main(options) {
+  ensureNodeVersion();
   const manifest = await fetchJson(options.manifestUrl);
   const latestVersion = String(manifest.version || '').trim();
   if (!latestVersion) {

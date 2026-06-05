@@ -6,8 +6,12 @@ import { createDb } from '../../apps/server/src/db/client.js';
 import { createAppContext } from '../../apps/server/src/create-context.js';
 import { buildApp } from '../../apps/server/src/app.js';
 import { InMemoryVoiceSfuAdapter } from '../../apps/server/src/voice/in-memory-voice-sfu-adapter.js';
+import type { AcmeModuleLoader } from '../../apps/server/src/services/acme-service.js';
 
-export async function createTestApp(options: { webDistDir?: string | false } = {}) {
+export async function createTestApp(options: {
+  webDistDir?: string | false;
+  acmeModuleLoader?: AcmeModuleLoader;
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'current-test-'));
   const dbPath = join(dir, 'current.sqlite');
   const uploads = join(dir, 'uploads');
@@ -50,6 +54,7 @@ export async function createTestApp(options: { webDistDir?: string | false } = {
     config,
     configPath,
     voiceSfu,
+    acmeModuleLoader: options.acmeModuleLoader,
   });
 
   const app = buildApp(context, { webDistDir: options.webDistDir ?? false });

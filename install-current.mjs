@@ -24,6 +24,7 @@ const configPath = join(configDir, 'current.config.json');
 const serviceTemplate = join(sourceDir, 'deploy', 'current.service');
 const serviceTarget = '/etc/systemd/system/current.service';
 const pnpmVersion = process.env.CURRENT_PNPM_VERSION || '11.3.0';
+const minimumNodeVersion = '24.0.0';
 const symlinkSafePnpmArgs = [
   '--config.node-linker=hoisted',
   '--config.package-import-method=copy',
@@ -31,16 +32,175 @@ const symlinkSafePnpmArgs = [
 ];
 
 function parseArgs() {
-  return {
+  const options = {
     reinstall: process.argv.includes('--reinstall'),
     yes: process.argv.includes('--yes') || process.argv.includes('-y'),
+    publicUrl: process.env.CURRENT_PUBLIC_URL
+      ? normalizePublicUrl(process.env.CURRENT_PUBLIC_URL)
+      : '',
+    host: process.env.CURRENT_HOST?.trim() || process.env.CURRENT_SERVER_HOST?.trim() || '',
+    port:
+      process.env.CURRENT_PORT || process.env.CURRENT_SERVER_PORT || process.env.PORT
+        ? normalizePort(
+            process.env.CURRENT_PORT || process.env.CURRENT_SERVER_PORT || process.env.PORT,
+          )
+        : null,
+    serverName: '',
+    registrationMode: '',
+    rtcAnnouncedIp: process.env.CURRENT_RTC_ANNOUNCED_IP?.trim() || '',
   };
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--help' || arg === '-h') {
+      console.log(usage());
+      process.exit(0);
+    }
+    if (arg === '--reinstall' || arg === '--yes' || arg === '-y') {
+      continue;
+    }
+    if (
+      arg === '--public-url' ||
+      arg === '--host' ||
+      arg === '--port' ||
+      arg === '--server-name' ||
+      arg === '--registration-mode' ||
+      arg === '--rtc-announced-ip'
+    ) {
+      const value = args[index + 1];
+      if (!value) {
+        throw new Error(`Missing value for ${arg}.`);
+      }
+      index += 1;
+      if (arg === '--public-url') {
+        options.publicUrl = normalizePublicUrl(value);
+      } else if (arg === '--host') {
+        options.host = value.trim();
+      } else if (arg === '--port') {
+        options.port = normalizePort(value);
+      } else if (arg === '--server-name') {
+        options.serverName = value.trim();
+      } else if (arg === '--registration-mode') {
+        options.registrationMode = normalizeRegistrationMode(value);
+      } else {
+        options.rtcAnnouncedIp = value.trim();
+      }
+      continue;
+    }
+    if (arg.startsWith('--public-url=')) {
+      options.publicUrl = normalizePublicUrl(arg.slice('--public-url='.length));
+      continue;
+    }
+    if (arg.startsWith('--host=')) {
+      options.host = arg.slice('--host='.length).trim();
+      continue;
+    }
+    if (arg.startsWith('--port=')) {
+      options.port = normalizePort(arg.slice('--port='.length));
+      continue;
+    }
+    if (arg.startsWith('--server-name=')) {
+      options.serverName = arg.slice('--server-name='.length).trim();
+      continue;
+    }
+    if (arg.startsWith('--registration-mode=')) {
+      options.registrationMode = normalizeRegistrationMode(
+        arg.slice('--registration-mode='.length),
+      );
+      continue;
+    }
+    if (arg.startsWith('--rtc-announced-ip=')) {
+      options.rtcAnnouncedIp = arg.slice('--rtc-announced-ip='.length).trim();
+      continue;
+    }
+    throw new Error(`Unknown option ${arg}.\n\n${usage()}`);
+  }
+  return options;
+}
+
+function usage() {
+  return [
+    'Usage: sudo node install-current.mjs [options]',
+    '',
+    'Options:',
+    '  --reinstall                    Reinstall this version if Current is already installed.',
+    '  --yes, -y                      Answer yes to reinstall prompts.',
+    '  --public-url <url>             Public origin for cloud/reverse-proxy hosting.',
+    '  --host <address>               Listen address. Default: 0.0.0.0.',
+    '  --port <port>                  TCP listen port. Default: 6414.',
+    '  --server-name <name>           Initial server display name.',
+    '  --registration-mode <mode>     invite_only, open_signup, or manual_approval.',
+    '  --rtc-announced-ip <address>   Public IP/DNS advertised for voice transports.',
+  ].join('\n');
 }
 
 function requireRoot() {
   if (typeof process.getuid === 'function' && process.getuid() !== 0) {
     throw new Error('Please run install-current.mjs as root (sudo).');
   }
+}
+
+function parseVersionParts(version) {
+  return version
+    .split('.')
+    .map((part) => Number(part))
+    .map((part) => (Number.isInteger(part) && part >= 0 ? part : 0));
+}
+
+function compareVersions(left, right) {
+  const leftParts = parseVersionParts(left);
+  const rightParts = parseVersionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+function ensureNodeVersion() {
+  if (compareVersions(process.versions.node, minimumNodeVersion) < 0) {
+    throw new Error(
+      `Node.js ${minimumNodeVersion}+ is required. Current Node.js is ${process.versions.node}.`,
+    );
+  }
+}
+
+function normalizePort(value) {
+  const port = Number(String(value).trim());
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid port "${value}". Use a number from 1 to 65535.`);
+  }
+  return port;
+}
+
+function normalizePublicUrl(value) {
+  const trimmed = String(value).trim();
+  try {
+    const parsed = new URL(trimmed);
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    throw new Error(`Invalid public URL "${trimmed}". Use a full http:// or https:// URL.`);
+  }
+}
+
+function normalizeRegistrationMode(value) {
+  const mode = String(value).trim();
+  if (!['invite_only', 'open_signup', 'manual_approval'].includes(mode)) {
+    throw new Error(
+      `Invalid registration mode "${value}". Use invite_only, open_signup, or manual_approval.`,
+    );
+  }
+  return mode;
 }
 
 function run(command, args, label, cwd = sourceDir) {
@@ -142,6 +302,14 @@ function defaultConfig() {
         enabled: false,
         certPath: '',
         keyPath: '',
+        acme: {
+          mode: 'off',
+          email: '',
+          domain: '',
+          directoryUrl: 'https://acme-v02.api.letsencrypt.org/directory',
+          certDir: '',
+          renewBeforeDays: 30,
+        },
       },
     },
     auth: {
@@ -197,12 +365,105 @@ function defaultConfig() {
   };
 }
 
-async function maybeCreateConfig() {
+function isLoopbackUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '::1' ||
+      parsed.hostname === '[::1]' ||
+      parsed.hostname.startsWith('127.')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function withPort(value, port) {
+  const parsed = new URL(value);
+  parsed.port = String(port);
+  const next = parsed.toString();
+  return parsed.pathname === '/' && !parsed.search && !parsed.hash ? next.replace(/\/$/, '') : next;
+}
+
+function withLoopbackPort(value, port) {
+  return isLoopbackUrl(value) ? withPort(value, port) : value;
+}
+
+function buildDefaultOAuthRedirectUri(publicUrl) {
+  const redirect = new URL(publicUrl);
+  redirect.pathname = '/api/v1/auth/oauth/callback';
+  redirect.search = '';
+  redirect.hash = '';
+  return redirect.toString();
+}
+
+function deriveDiscoverableClientIdFromPublicUrl(publicUrl) {
+  try {
+    const parsed = new URL(publicUrl);
+    if (parsed.protocol !== 'https:') {
+      return null;
+    }
+    if (
+      parsed.hostname === 'localhost' ||
+      parsed.hostname === '::1' ||
+      /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname)
+    ) {
+      return null;
+    }
+    if (!parsed.hostname.includes('.') || parsed.hostname.endsWith('.local')) {
+      return null;
+    }
+    return new URL('/api/v1/auth/client-metadata.json', parsed).toString();
+  } catch {
+    return null;
+  }
+}
+
+function applyInstallConfigOptions(config, options) {
+  const next = structuredClone(config);
+  if (options.serverName) {
+    next.server.name = options.serverName;
+  }
+  if (options.host) {
+    next.server.host = options.host;
+  }
+  if (options.port) {
+    next.server.port = options.port;
+    next.server.publicUrl = withLoopbackPort(next.server.publicUrl, options.port);
+    next.auth.redirectUri = withLoopbackPort(next.auth.redirectUri, options.port);
+  }
+  if (options.publicUrl) {
+    next.server.publicUrl = options.publicUrl;
+    next.auth.redirectUri = buildDefaultOAuthRedirectUri(options.publicUrl);
+    if (!next.auth.atprotoClientId) {
+      next.auth.atprotoClientId = deriveDiscoverableClientIdFromPublicUrl(options.publicUrl) ?? '';
+    }
+  }
+  if (options.registrationMode) {
+    next.server.registrationMode = options.registrationMode;
+  }
+  if (options.rtcAnnouncedIp) {
+    next.rtc.announcedIp = options.rtcAnnouncedIp;
+  }
+  return next;
+}
+
+async function maybeCreateConfig(options) {
   if (existsSync(configPath)) {
+    const existing = JSON.parse(await readFile(configPath, 'utf8'));
+    const next = applyInstallConfigOptions(existing, options);
+    if (JSON.stringify(existing) !== JSON.stringify(next)) {
+      console.log(`Updating cloud/server settings in ${configPath}`);
+      await writeFile(configPath, `${JSON.stringify(next, null, 2)}\n`);
+    }
     return;
   }
   console.log(`Creating default config at ${configPath}`);
-  await writeFile(configPath, `${JSON.stringify(defaultConfig(), null, 2)}\n`);
+  await writeFile(
+    configPath,
+    `${JSON.stringify(applyInstallConfigOptions(defaultConfig(), options), null, 2)}\n`,
+  );
 }
 
 function relativePosix(path) {
@@ -290,23 +551,31 @@ async function chownRecursive(path, uid, gid) {
 }
 
 function resolvePackageManager() {
-  if (commandWorks('npx')) {
-    return ['npx', ['--yes', `pnpm@${pnpmVersion}`]];
+  const installedPnpmVersion = commandStdout('pnpm');
+  if (installedPnpmVersion === pnpmVersion) {
+    return ['pnpm', []];
   }
-  if (commandWorks('corepack')) {
+  if (commandWorks('corepack', ['--version'])) {
     spawnSync('corepack', ['enable'], { cwd: sourceDir, stdio: 'ignore', shell: false });
-    spawnSync('corepack', ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
+    const prepare = spawnSync('corepack', ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
       cwd: sourceDir,
       stdio: 'ignore',
       shell: false,
     });
-    return ['corepack', ['pnpm']];
+    if (prepare.status === 0) {
+      return ['corepack', ['pnpm']];
+    }
   }
-  if (commandStdout('pnpm') === pnpmVersion) {
-    return ['pnpm', []];
+  if (commandWorks('npx')) {
+    return ['npx', ['--yes', `pnpm@${pnpmVersion}`]];
+  }
+  if (installedPnpmVersion) {
+    throw new Error(
+      `Found pnpm ${installedPnpmVersion}, but this project pins pnpm ${pnpmVersion}. Enable corepack or install the pinned pnpm version.`,
+    );
   }
   throw new Error(
-    `pnpm@${pnpmVersion} is required. Install npm/npx, enable corepack, or update pnpm.`,
+    `pnpm@${pnpmVersion} is required. Install Node.js ${minimumNodeVersion}+ with npm/npx, enable corepack, or install pnpm ${pnpmVersion}.`,
   );
 }
 
@@ -350,8 +619,9 @@ async function installDependencies(currentWorkdir) {
 }
 
 async function main() {
-  requireRoot();
   const options = parseArgs();
+  ensureNodeVersion();
+  requireRoot();
   const currentUser = resolveInstallUser();
   const version = readCurrentVersion();
   const versionName = `current-server-v${version}`;
@@ -360,9 +630,6 @@ async function main() {
 
   if (!existsSync(serviceTemplate)) {
     throw new Error(`Missing service template: ${serviceTemplate}`);
-  }
-  if (!commandWorks(process.execPath, ['--version'])) {
-    throw new Error('Node.js 20+ is required.');
   }
 
   if (
@@ -387,7 +654,7 @@ async function main() {
   await mkdir(join(installRoot, 'versions'), { recursive: true });
   await mkdir(join(stateDir, 'uploads'), { recursive: true });
   await mkdir(join(stateDir, 'backups'), { recursive: true });
-  await maybeCreateConfig();
+  await maybeCreateConfig(options);
 
   const stageDir = join(installRoot, 'versions', `.stage-${versionName}-${process.pid}`);
   await rm(stageDir, { recursive: true, force: true });

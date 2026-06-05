@@ -17,6 +17,11 @@ describe('setup owner assignment', () => {
       network: {
         port: 6414,
         publicUrl: 'http://localhost:8080',
+        serverAddress: 'http://localhost:8080',
+      },
+      ownership: {
+        verificationRequired: true,
+        verificationCodeLength: 8,
       },
     });
 
@@ -47,6 +52,187 @@ describe('setup owner assignment', () => {
         code: 'SETUP_AUTH_REQUIRED',
       },
     });
+
+    await close();
+  });
+
+  it('allows same-host headless setup to publish an HTTPS cloud URL', async () => {
+    const { app, context, close } = await createTestApp();
+    context.serverConfig.patchFullAdminSettings({
+      auth: {
+        atprotoClientId: '',
+      },
+    });
+
+    const bootstrapResponse = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/bootstrap',
+      headers: {
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'chat.example.com',
+      },
+      payload: {
+        serverName: 'Cloud Current',
+        slug: 'cloud-current',
+        registrationMode: 'invite_only',
+      },
+    });
+
+    expect(bootstrapResponse.statusCode).toBe(201);
+
+    const config = context.serverConfig.get();
+    expect(config.server.publicUrl).toBe('https://chat.example.com');
+    expect(config.auth.redirectUri).toBe('https://chat.example.com/api/v1/auth/oauth/callback');
+    expect(config.auth.atprotoClientId).toBe(
+      'https://chat.example.com/api/v1/auth/client-metadata.json',
+    );
+
+    await close();
+  });
+
+  it('updates generated OAuth URLs when the Server address changes', async () => {
+    const { context, close } = await createTestApp();
+    context.serverConfig.patchFullAdminSettings({
+      server: {
+        publicUrl: 'https://old.example.com',
+      },
+      auth: {
+        atprotoClientId: 'https://old.example.com/api/v1/auth/client-metadata.json',
+        redirectUri: 'https://old.example.com/api/v1/auth/oauth/callback',
+      },
+    });
+
+    const next = context.serverConfig.patchFullAdminSettings({
+      server: {
+        publicUrl: 'https://new.example.com',
+      },
+    });
+
+    expect(next.auth.redirectUri).toBe('https://new.example.com/api/v1/auth/oauth/callback');
+    expect(next.auth.atprotoClientId).toBe(
+      'https://new.example.com/api/v1/auth/client-metadata.json',
+    );
+
+    await close();
+  });
+
+  it('does not auto-assign a remote signed-in user as owner without the terminal code', async () => {
+    const { app, db, close } = await createTestApp();
+
+    db.prepare(
+      `
+      INSERT INTO users (id, did, handle, display_name, avatar_url, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    ).run(
+      'usr_remote_setup',
+      'did:plc:remote-setup',
+      'remote-setup.bsky.social',
+      'Remote Setup',
+      null,
+      nowIso(),
+      nowIso(),
+    );
+    db.prepare(
+      `
+      INSERT INTO sessions (token, user_id, expires_at, created_at)
+      VALUES (?, ?, ?, ?)
+    `,
+    ).run('remote_setup_session', 'usr_remote_setup', addHours(1), nowIso());
+
+    const bootstrapResponse = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/bootstrap',
+      remoteAddress: '10.10.10.10',
+      cookies: {
+        current_session: 'remote_setup_session',
+      },
+      payload: {
+        serverName: 'Remote Code Server',
+        slug: 'remote-code-server',
+        serverAddress: 'https://chat.example.com',
+        registrationMode: 'invite_only',
+      },
+    });
+
+    expect(bootstrapResponse.statusCode).toBe(201);
+
+    const ownerRecord = db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get('owner_user_id') as { value: string } | undefined;
+    expect(ownerRecord).toBeUndefined();
+
+    const sessionResponse = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/session',
+      remoteAddress: '10.10.10.10',
+      cookies: {
+        current_session: 'remote_setup_session',
+      },
+    });
+    expect(sessionResponse.statusCode).toBe(200);
+    expect((sessionResponse.json() as { ownership: { ownerUserId?: string } }).ownership.ownerUserId).toBeUndefined();
+
+    await close();
+  });
+
+  it('assigns a remote signed-in user as owner with the terminal code and invalidates it', async () => {
+    const { app, db, context, close } = await createTestApp();
+    context.serverConfig.patchFullAdminSettings({
+      auth: {
+        atprotoClientId: '',
+      },
+    });
+
+    db.prepare(
+      `
+      INSERT INTO users (id, did, handle, display_name, avatar_url, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `,
+    ).run(
+      'usr_verified_setup',
+      'did:plc:verified-setup',
+      'verified-setup.bsky.social',
+      'Verified Setup',
+      null,
+      nowIso(),
+      nowIso(),
+    );
+    db.prepare(
+      `
+      INSERT INTO sessions (token, user_id, expires_at, created_at)
+      VALUES (?, ?, ?, ?)
+    `,
+    ).run('verified_setup_session', 'usr_verified_setup', addHours(1), nowIso());
+
+    const ownerCode = context.setup.createOwnerVerificationCode();
+    const bootstrapResponse = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/bootstrap',
+      remoteAddress: '10.10.10.20',
+      cookies: {
+        current_session: 'verified_setup_session',
+      },
+      payload: {
+        serverName: 'Verified Code Server',
+        slug: 'verified-code-server',
+        serverAddress: 'https://verified.example.com',
+        ownerVerificationCode: ownerCode.code,
+        registrationMode: 'invite_only',
+      },
+    });
+
+    expect(bootstrapResponse.statusCode).toBe(201);
+    expect(context.setup.hasActiveOwnerVerificationCode()).toBe(false);
+
+    const ownerRecord = db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get('owner_user_id') as { value: string } | undefined;
+    expect(ownerRecord?.value).toBe('usr_verified_setup');
+    expect(context.serverConfig.get().server.publicUrl).toBe('https://verified.example.com');
+    expect(context.serverConfig.get().auth.redirectUri).toBe(
+      'https://verified.example.com/api/v1/auth/oauth/callback',
+    );
 
     await close();
   });
@@ -82,7 +268,10 @@ describe('setup owner assignment', () => {
     });
 
     expect(bootstrapResponse.statusCode).toBe(201);
-    const bootstrapPayload = bootstrapResponse.json() as { serverId: string; defaultChannelId: string };
+    const bootstrapPayload = bootstrapResponse.json() as {
+      serverId: string;
+      defaultChannelId: string;
+    };
     expect(bootstrapPayload.serverId).toBeTruthy();
     expect(bootstrapPayload.defaultChannelId).toBeTruthy();
 

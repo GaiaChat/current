@@ -1,9 +1,12 @@
 {
   "name": "current",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "description": "Current - local-first Discord-style chat and voice with atproto auth",
   "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -20,6 +23,7 @@
     "launch:server:normal": "node \"Run Current.mjs\" --no-pause --mode=normal",
     "lint": "turbo run lint",
     "release:server": "node build-server-release.mjs",
+    "bootstrap:server": "node bootstrap-current-server.mjs",
     "update:server": "node \"Update Current.mjs\" --no-pause",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",

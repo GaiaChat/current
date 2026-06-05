@@ -255,6 +255,13 @@ type SetupStatus = {
   network?: {
     port?: number;
     publicUrl?: string;
+    serverAddress?: string;
+  };
+  ownership?: {
+    ownerUserId?: string;
+    verificationRequired?: boolean;
+    verificationCodeLength?: number;
+    verificationCodeActive?: boolean;
   };
   server?: {
     id?: string;
@@ -7740,6 +7747,11 @@ export function App() {
         owner={sessionQuery.data.user}
         authMode={setupQuery.data?.authMode ?? 'atproto'}
         serverPort={setupQuery.data?.network?.port}
+        initialServerAddress={
+          setupQuery.data?.network?.serverAddress ?? setupQuery.data?.network?.publicUrl
+        }
+        ownerVerificationRequired={Boolean(setupQuery.data?.ownership?.verificationRequired)}
+        ownerVerificationCodeLength={setupQuery.data?.ownership?.verificationCodeLength}
         onConfigured={handleSetupConfigured}
       />
     );
@@ -10461,11 +10473,17 @@ function SetupWizard({
   owner,
   authMode,
   serverPort,
+  initialServerAddress,
+  ownerVerificationRequired,
+  ownerVerificationCodeLength,
   onConfigured,
 }: {
   owner: SessionPayload['user'];
   authMode: AuthMode;
   serverPort?: number;
+  initialServerAddress?: string;
+  ownerVerificationRequired?: boolean;
+  ownerVerificationCodeLength?: number;
   onConfigured: (
     result: SetupBootstrapResponse,
     initialPresenceStatus: UserPresenceStatus,
@@ -10476,6 +10494,10 @@ function SetupWizard({
   const [serverName, setServerName] = useState('Current Community');
   const [slug, setSlug] = useState('current-community');
   const [slugTouched, setSlugTouched] = useState(false);
+  const [serverAddress, setServerAddress] = useState(
+    initialServerAddress || window.location.origin,
+  );
+  const [ownerVerificationCode, setOwnerVerificationCode] = useState('');
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>('invite_only');
   const [initialPresenceStatus, setInitialPresenceStatus] = useState<UserPresenceStatus>('online');
   const [defaultSlowmodeSeconds, setDefaultSlowmodeSeconds] = useState(0);
@@ -10492,7 +10514,11 @@ function SetupWizard({
   const isFinalStep = step === setupSteps.length - 1;
   const normalizedSlug = slugifyServerName(slug);
   const allowedMimePrefixes = parseSetupList(allowedMimePrefixesText);
-  const basicsValid = serverName.trim().length >= 2 && normalizedSlug.length >= 2;
+  const normalizedServerAddress = normalizeSetupServerAddress(serverAddress);
+  const basicsValid =
+    serverName.trim().length >= 2 &&
+    normalizedSlug.length >= 2 &&
+    Boolean(normalizedServerAddress);
   const preferencesValid =
     Number.isFinite(defaultSlowmodeSeconds) &&
     defaultSlowmodeSeconds >= 0 &&
@@ -10514,6 +10540,8 @@ function SetupWizard({
       apiPost<SetupBootstrapResponse>('/api/v1/setup/bootstrap', {
         serverName: serverName.trim(),
         slug: normalizedSlug,
+        serverAddress: normalizedServerAddress,
+        ownerVerificationCode: ownerVerificationCode.trim() || undefined,
         registrationMode,
         initialPresenceStatus,
         moderation: {
@@ -10604,6 +10632,28 @@ function SetupWizard({
                   }}
                 />
               </label>
+              <label>
+                Server address
+                <input
+                  value={serverAddress}
+                  onChange={(event) => setServerAddress(event.target.value)}
+                  placeholder="https://chat.example.com"
+                />
+              </label>
+              {ownerVerificationRequired && (
+                <label>
+                  Owner verification code
+                  <input
+                    value={ownerVerificationCode}
+                    onChange={(event) => setOwnerVerificationCode(event.target.value)}
+                    placeholder={
+                      ownerVerificationCodeLength
+                        ? `${'0'.repeat(Math.min(4, ownerVerificationCodeLength))}-${'0'.repeat(Math.max(0, ownerVerificationCodeLength - 4))}`
+                        : '1234-5678'
+                    }
+                  />
+                </label>
+              )}
               <p className="setup-note setup-port-note">
                 <strong>Port to forward:</strong> TCP {portToForward}. Forward this router or
                 firewall port to the machine running Current.
@@ -10620,7 +10670,10 @@ function SetupWizard({
                 </select>
               </label>
             </div>
-            <p className="setup-note">Default spaces: #general for text and lounge for voice.</p>
+            <p className="setup-note">
+              Server address is the link people use to open Current. The owner code is required
+              when claiming ownership from a remote browser.
+            </p>
           </section>
         )}
 
@@ -10777,6 +10830,21 @@ function SetupWizard({
 function normalizeSetupPort(value: unknown): number | null {
   const port = Number(value);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+}
+
+function normalizeSetupServerAddress(value: string): string {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return '';
+    }
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
 }
 
 function ServerRemovalScreen({ notice }: { notice: ServerRemovalNotice }) {

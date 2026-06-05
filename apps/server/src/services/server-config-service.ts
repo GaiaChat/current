@@ -1,4 +1,3 @@
-import { isIP } from 'node:net';
 import {
   createDefaultConfig,
   loadConfig,
@@ -7,6 +6,12 @@ import {
   type DeepPartial,
 } from '@current/config';
 import type { RegistrationMode } from '@current/types';
+import {
+  buildDefaultOAuthRedirectUri,
+  deriveDiscoverableClientIdFromPublicUrl,
+  isGeneratedDiscoverableClientIdForPublicUrl,
+  isGeneratedOAuthRedirectForPublicUrl,
+} from '../utils/request-url.js';
 
 function mergeDefined<T>(base: T, patch: DeepPartial<T>): T {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
@@ -108,11 +113,11 @@ export class ServerConfigService {
       merged.moderation.linkPolicy = input.moderation.linkPolicy;
     }
     if (!hadExplicitClientId) {
-      const discoverableClientId = this.deriveDiscoverableClientIdFromPublicUrl(input.publicUrl);
+      const discoverableClientId = deriveDiscoverableClientIdFromPublicUrl(input.publicUrl);
       if (discoverableClientId) {
         merged.auth.atprotoClientId = discoverableClientId;
       }
-      merged.auth.redirectUri = this.buildDefaultOAuthRedirectUri(input.publicUrl);
+      merged.auth.redirectUri = buildDefaultOAuthRedirectUri(input.publicUrl);
     }
     this.set(merged);
     return merged;
@@ -163,33 +168,22 @@ export class ServerConfigService {
   patchFullAdminSettings(input: DeepPartial<CurrentConfig>): CurrentConfig {
     const current = createDefaultConfig(this.config);
     const merged = createDefaultConfig(mergeDefined(current, input));
+    if (input.server?.publicUrl && !input.auth?.redirectUri) {
+      const publicUrl = input.server.publicUrl;
+      if (isGeneratedOAuthRedirectForPublicUrl(current.auth.redirectUri, current.server.publicUrl)) {
+        merged.auth.redirectUri = buildDefaultOAuthRedirectUri(publicUrl);
+      }
+      if (
+        !current.auth.atprotoClientId ||
+        isGeneratedDiscoverableClientIdForPublicUrl(
+          current.auth.atprotoClientId,
+          current.server.publicUrl,
+        )
+      ) {
+        merged.auth.atprotoClientId = deriveDiscoverableClientIdFromPublicUrl(publicUrl) ?? '';
+      }
+    }
     this.set(merged);
     return merged;
-  }
-
-  private buildDefaultOAuthRedirectUri(publicUrl: string): string {
-    const redirect = new URL(publicUrl);
-    redirect.pathname = '/api/v1/auth/oauth/callback';
-    redirect.search = '';
-    redirect.hash = '';
-    return redirect.toString();
-  }
-
-  private deriveDiscoverableClientIdFromPublicUrl(publicUrl: string): string | null {
-    try {
-      const parsed = new URL(publicUrl);
-      if (parsed.protocol !== 'https:') {
-        return null;
-      }
-      if (parsed.hostname === 'localhost' || parsed.hostname === '::1' || isIP(parsed.hostname)) {
-        return null;
-      }
-      if (!parsed.hostname.includes('.') || parsed.hostname.endsWith('.local')) {
-        return null;
-      }
-      return new URL('/api/v1/auth/client-metadata.json', parsed).toString();
-    } catch {
-      return null;
-    }
   }
 }

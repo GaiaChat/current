@@ -10,6 +10,10 @@ import {
 import { createDb } from './db/client.js';
 import { createAppContext } from './create-context.js';
 import { buildApp } from './app.js';
+import {
+  buildDefaultOAuthRedirectUri,
+  deriveDiscoverableClientIdFromPublicUrl,
+} from './utils/request-url.js';
 
 function normalizeBrowserHost(host: string): string {
   const trimmed = host.trim();
@@ -23,6 +27,36 @@ function normalizeBrowserHost(host: string): string {
     return `[${trimmed}]`;
   }
   return trimmed;
+}
+
+function normalizeUrl(value: string, options: { originOnly?: boolean } = {}): string {
+  const parsed = new URL(value);
+  if (options.originOnly) {
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+  }
+  return parsed.toString().replace(/\/$/, '');
+}
+
+function parseUrlOverride(
+  name: string,
+  value: string | undefined,
+  options: { originOnly?: boolean } = {},
+): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    return normalizeUrl(trimmed, options);
+  } catch {
+    throw new Error(`Invalid ${name} "${trimmed}". Use a full http:// or https:// URL.`);
+  }
+}
+
+function parseHostOverride(): string | null {
+  return process.env.CURRENT_HOST?.trim() || process.env.CURRENT_SERVER_HOST?.trim() || null;
 }
 
 function buildLocalWebsiteUrl(config: CurrentConfig): string {
@@ -72,21 +106,46 @@ function withLoopbackPort(value: string, port: number): string {
   return isLoopbackUrl(value) ? withPort(value, port) : value;
 }
 
+interface RuntimeNetworkOverrides {
+  host: string | null;
+  publicUrl: string | null;
+  redirectUri: string | null;
+  rtcAnnouncedIp: string | null;
+}
+
 function applyRuntimeNetworkConfig(
   config: CurrentConfig,
   portOverride: number | null,
+  overrides: RuntimeNetworkOverrides,
 ): CurrentConfig {
   const port = portOverride ?? config.server.port;
+  const publicUrl = overrides.publicUrl ?? withLoopbackPort(config.server.publicUrl, port);
+  const redirectUri =
+    overrides.redirectUri ??
+    (overrides.publicUrl
+      ? buildDefaultOAuthRedirectUri(overrides.publicUrl)
+      : withLoopbackPort(config.auth.redirectUri, port));
+  const atprotoClientId =
+    config.auth.atprotoClientId ||
+    (overrides.publicUrl
+      ? (deriveDiscoverableClientIdFromPublicUrl(overrides.publicUrl) ?? '')
+      : '');
   return createDefaultConfig({
     ...config,
     server: {
       ...config.server,
+      host: overrides.host ?? config.server.host,
       port,
-      publicUrl: withLoopbackPort(config.server.publicUrl, port),
+      publicUrl,
     },
     auth: {
       ...config.auth,
-      redirectUri: withLoopbackPort(config.auth.redirectUri, port),
+      atprotoClientId,
+      redirectUri,
+    },
+    rtc: {
+      ...config.rtc,
+      announcedIp: overrides.rtcAnnouncedIp ?? config.rtc.announcedIp,
     },
   });
 }
@@ -135,6 +194,17 @@ async function main() {
   const configPath =
     process.env.CURRENT_CONFIG_PATH ?? join(process.cwd(), 'config/current.config.json');
   const portOverride = parsePortOverride();
+  const networkOverrides: RuntimeNetworkOverrides = {
+    host: parseHostOverride(),
+    publicUrl: parseUrlOverride('CURRENT_PUBLIC_URL', process.env.CURRENT_PUBLIC_URL, {
+      originOnly: true,
+    }),
+    redirectUri: parseUrlOverride(
+      'CURRENT_AUTH_REDIRECT_URI',
+      process.env.CURRENT_AUTH_REDIRECT_URI,
+    ),
+    rtcAnnouncedIp: process.env.CURRENT_RTC_ANNOUNCED_IP?.trim() || null,
+  };
 
   if (!configExists(configPath)) {
     mkdirSync(dirname(configPath), { recursive: true });
@@ -142,7 +212,7 @@ async function main() {
     saveConfig(configPath, defaultConfig);
   }
 
-  const config = applyRuntimeNetworkConfig(loadConfig(configPath), portOverride);
+  const config = applyRuntimeNetworkConfig(loadConfig(configPath), portOverride, networkOverrides);
   const db = createDb(config.storage.sqlitePath);
   const context = createAppContext({
     db,
@@ -151,6 +221,13 @@ async function main() {
   });
 
   const app = buildApp(context);
+
+  const ownerCode = context.setup.ensureOwnerVerificationCodeIfNeeded();
+  if (ownerCode) {
+    console.log('[server] Owner verification required.');
+    console.log(`[server] Owner verification code: ${ownerCode.code}`);
+    console.log(`[server] Code expires at: ${ownerCode.expiresAt}`);
+  }
 
   const host = config.server.host;
   const port = config.server.port;
@@ -163,6 +240,15 @@ async function main() {
   logWebsiteUrl(config, listenAddress);
   if (portOverride) {
     console.log(`[server] Port override active: ${portOverride}`);
+  }
+  if (networkOverrides.host) {
+    console.log(`[server] Host override active: ${networkOverrides.host}`);
+  }
+  if (networkOverrides.publicUrl) {
+    console.log(`[server] Public URL override active: ${networkOverrides.publicUrl}`);
+  }
+  if (networkOverrides.rtcAnnouncedIp) {
+    console.log(`[server] RTC announced IP override active: ${networkOverrides.rtcAnnouncedIp}`);
   }
   app.log.info(`Current server running at ${config.server.publicUrl}`);
 

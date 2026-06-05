@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { CurrentUser, RegistrationMode, UserPresenceStatus } from '@current/types';
@@ -14,6 +15,13 @@ export interface SetupStatus {
   network: {
     port: number;
     publicUrl: string;
+    serverAddress: string;
+  };
+  ownership: {
+    ownerUserId?: string;
+    verificationRequired: boolean;
+    verificationCodeLength: number;
+    verificationCodeActive: boolean;
   };
   server?: {
     id: string;
@@ -26,6 +34,7 @@ export interface BootstrapInput {
   serverName: string;
   slug: string;
   publicUrl: string;
+  serverAddress?: string;
   registrationMode: RegistrationMode;
   initialPresenceStatus?: UserPresenceStatus;
   media?: {
@@ -49,6 +58,7 @@ export interface BootstrapInput {
 
 export interface EnsureOwnerOptions {
   allowLanOwnershipRecovery?: boolean;
+  allowAutomaticOwnership?: boolean;
 }
 
 export interface FactoryResetResult {
@@ -56,7 +66,31 @@ export interface FactoryResetResult {
   attachmentFilesDeleted: number;
 }
 
+export interface OwnerVerificationCode {
+  code: string;
+  expiresAt: string;
+}
+
+export interface OwnerVerificationResult {
+  ok: boolean;
+  code: string;
+  message: string;
+}
+
+const OWNER_VERIFICATION_CODE_DIGITS = 8;
+const OWNER_VERIFICATION_CODE_TTL_MS = 15 * 60 * 1000;
+const OWNER_VERIFICATION_MAX_FAILURES = 8;
+
+interface OwnerVerificationState {
+  salt: string;
+  hash: string;
+  expiresAtMs: number;
+  failedAttempts: number;
+}
+
 export class SetupService {
+  private ownerVerificationState: OwnerVerificationState | null = null;
+
   constructor(
     private readonly repos: RepositoryBag,
     private readonly serverConfig: ServerConfigService,
@@ -75,6 +109,13 @@ export class SetupService {
       network: {
         port: config.server.port,
         publicUrl: config.server.publicUrl,
+        serverAddress: config.server.publicUrl,
+      },
+      ownership: {
+        ownerUserId: this.getOwnerUserId() ?? undefined,
+        verificationRequired: !this.getOwnerUserId(),
+        verificationCodeLength: OWNER_VERIFICATION_CODE_DIGITS,
+        verificationCodeActive: this.hasActiveOwnerVerificationCode(),
       },
       server: server
         ? {
@@ -141,6 +182,7 @@ export class SetupService {
       this.repos.users.addRole(adminUser.id, adminRole.id);
       this.repos.users.addRole(adminUser.id, memberRole.id);
       this.repos.settings.set('owner_user_id', adminUser.id);
+      this.ownerVerificationState = null;
     }
 
     this.repos.settings.set('setup_complete', true);
@@ -173,6 +215,7 @@ export class SetupService {
 
     const authMode = this.serverConfig.get().auth.mode;
     const allowLanOwnershipRecovery = Boolean(options.allowLanOwnershipRecovery);
+    const allowAutomaticOwnership = Boolean(options.allowAutomaticOwnership);
     const hasAdminAssigned = this.repos.users.hasAnyAssigneeForRole(adminRole.id);
     if (authMode === 'lan') {
       const ownerUserId = this.getOwnerUserId();
@@ -202,14 +245,14 @@ export class SetupService {
       }
     }
 
-    if (!hasAdminAssigned) {
+    if (!hasAdminAssigned && allowAutomaticOwnership) {
       this.repos.users.addRole(user.id, adminRole.id);
       if (memberRole) {
         this.repos.users.addRole(user.id, memberRole.id);
       }
     }
 
-    if (!this.getOwnerUserId()) {
+    if (!this.getOwnerUserId() && allowAutomaticOwnership) {
       this.repos.settings.set('owner_user_id', user.id);
     }
 
@@ -218,6 +261,85 @@ export class SetupService {
 
   getOwnerUserId(): string | null {
     return this.repos.settings.get<string>('owner_user_id');
+  }
+
+  hasActiveOwnerVerificationCode(now = Date.now()): boolean {
+    this.pruneOwnerVerificationCode(now);
+    return Boolean(this.ownerVerificationState);
+  }
+
+  ensureOwnerVerificationCodeIfNeeded(now = Date.now()): OwnerVerificationCode | null {
+    if (this.getOwnerUserId()) {
+      this.ownerVerificationState = null;
+      return null;
+    }
+    if (this.hasActiveOwnerVerificationCode(now)) {
+      return null;
+    }
+    return this.createOwnerVerificationCode(now);
+  }
+
+  createOwnerVerificationCode(now = Date.now()): OwnerVerificationCode {
+    const raw = String(randomInt(0, 100_000_000)).padStart(OWNER_VERIFICATION_CODE_DIGITS, '0');
+    const code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
+    const salt = randomBytes(16).toString('hex');
+    this.ownerVerificationState = {
+      salt,
+      hash: this.hashOwnerVerificationCode(raw, salt),
+      expiresAtMs: now + OWNER_VERIFICATION_CODE_TTL_MS,
+      failedAttempts: 0,
+    };
+    return {
+      code,
+      expiresAt: new Date(this.ownerVerificationState.expiresAtMs).toISOString(),
+    };
+  }
+
+  verifyOwnerVerificationCode(
+    input: string,
+    now = Date.now(),
+    options: { consume?: boolean } = {},
+  ): OwnerVerificationResult {
+    this.pruneOwnerVerificationCode(now);
+    const state = this.ownerVerificationState;
+    if (!state) {
+      return {
+        ok: false,
+        code: 'OWNER_CODE_EXPIRED',
+        message: 'The owner verification code expired. Generate a new code in the server terminal.',
+      };
+    }
+    if (state.failedAttempts >= OWNER_VERIFICATION_MAX_FAILURES) {
+      this.ownerVerificationState = null;
+      return {
+        ok: false,
+        code: 'OWNER_CODE_RATE_LIMITED',
+        message: 'Too many incorrect owner verification attempts. Generate a new code.',
+      };
+    }
+
+    const normalized = this.normalizeOwnerVerificationCode(input);
+    const candidateHash = this.hashOwnerVerificationCode(normalized, state.salt);
+    const expected = Buffer.from(state.hash, 'hex');
+    const candidate = Buffer.from(candidateHash, 'hex');
+    const matches = expected.length === candidate.length && timingSafeEqual(expected, candidate);
+    if (!matches) {
+      state.failedAttempts += 1;
+      return {
+        ok: false,
+        code: 'OWNER_CODE_INVALID',
+        message: 'Owner verification code did not match.',
+      };
+    }
+
+    if (options.consume !== false) {
+      this.ownerVerificationState = null;
+    }
+    return {
+      ok: true,
+      code: 'OWNER_CODE_ACCEPTED',
+      message: 'Owner verification code accepted.',
+    };
   }
 
   transferOwnership(input: { serverId: string; actorId: string; targetUserId: string }): CurrentUser {
@@ -235,6 +357,7 @@ export class SetupService {
 
     this.repos.users.addRole(target.id, adminRole.id);
     this.repos.settings.set('owner_user_id', target.id);
+    this.ownerVerificationState = null;
 
     this.repos.audit.create({
       serverId: input.serverId,
@@ -268,6 +391,20 @@ export class SetupService {
     return rows
       .map((row) => row.path?.trim())
       .filter((path): path is string => Boolean(path));
+  }
+
+  private pruneOwnerVerificationCode(now = Date.now()): void {
+    if (this.ownerVerificationState && this.ownerVerificationState.expiresAtMs <= now) {
+      this.ownerVerificationState = null;
+    }
+  }
+
+  private normalizeOwnerVerificationCode(value: string): string {
+    return value.replace(/\D/g, '').slice(0, OWNER_VERIFICATION_CODE_DIGITS);
+  }
+
+  private hashOwnerVerificationCode(code: string, salt: string): string {
+    return createHash('sha256').update(`${salt}:${code}`).digest('hex');
   }
 
   private deleteAttachmentFiles(paths: string[]): number {

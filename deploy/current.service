@@ -8,7 +8,7 @@ User={{CURRENT_USER}}
 WorkingDirectory={{CURRENT_WORKDIR}}
 Environment=CURRENT_CONFIG_PATH=/etc/current/current.config.json
 Environment=CURRENT_WEB_DIST_DIR={{CURRENT_WORKDIR}}/apps/web/dist
-ExecStart=/usr/bin/env bash -lc 'if command -v pnpm >/dev/null 2>&1; then pnpm --filter @current/server start; else npm run start --workspace=@current/server; fi'
+ExecStart=/usr/bin/env node apps/server/dist/index.js
 Restart=always
 RestartSec=3
 LimitNOFILE=65535

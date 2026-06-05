@@ -85,6 +85,16 @@ export function buildApp(context: AppContext, options: BuildAppOptions = {}) {
     await registerAdminRoutes(api);
   }, { prefix: '/api/v1' });
 
+  app.get('/.well-known/acme-challenge/:token', async (request, reply) => {
+    const params = request.params as { token?: string };
+    const keyAuthorization = params.token ? context.acme.getChallenge(params.token) : null;
+    if (!keyAuthorization) {
+      reply.code(404).send('Not found');
+      return;
+    }
+    reply.type('text/plain').send(keyAuthorization);
+  });
+
   registerWebClientRoutes(app, options.webDistDir);
 
   context.gateway.attach(app.server);

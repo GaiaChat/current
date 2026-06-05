@@ -29,6 +29,8 @@ size, SHA-256 digest, and extraction root. The archives intentionally exclude
 local config, SQLite data, uploads, backups, and `node_modules`. Release
 archives are runtime packages, not workspace checkouts, so first-run dependency
 installs avoid pnpm workspace symlinks on mounted or Windows-backed filesystems.
+Release manifests require Node.js 24.0.0 or newer because the server uses the
+built-in `node:sqlite` runtime module.
 
 ## Server-Side Update Flow
 
@@ -89,6 +91,8 @@ For one-click local servers:
 
 - Use the root Node launchers: `Install Current.mjs`, `Run Current.mjs`, and
   `Update Current.mjs`.
+- Use `bootstrap-current-server.mjs` from the server host for SSH/headless
+  first-run setup.
 - Check the manifest before the normal-mode build/start step.
 - Prompt in TTY launches: `Update available: vX.Y.Z. Install now?`.
 - Skip update checks for dev mode unless explicitly requested.
