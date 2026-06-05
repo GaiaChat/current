@@ -419,6 +419,7 @@ describe('admin settings and insights', () => {
         },
       });
       expect(bootstrapResponse.statusCode).toBe(201);
+      const { serverId } = bootstrapResponse.json() as { serverId: string };
 
       const owner = db
         .prepare('SELECT id FROM users WHERE did = ?')
@@ -460,6 +461,76 @@ describe('admin settings and insights', () => {
         },
       });
       expect(context.serverConfig.get().storage.uploadDir).toBe(originalUploadDir);
+
+      const icon = context.chat.saveAttachment({
+        fileName: 'remote-owner-icon.png',
+        mimeType: 'image/png',
+        bytes: Buffer.from('fake-icon'),
+      });
+      const currentConfig = context.serverConfig.get();
+      const allowedFullFormIconPatch = await app.inject({
+        method: 'PATCH',
+        url: '/api/v1/admin/settings',
+        headers: {
+          'x-forwarded-for': '203.0.113.10',
+        },
+        cookies: {
+          current_session: 'host_settings_owner_session',
+        },
+        payload: {
+          server: {
+            name: currentConfig.server.name,
+            slug: currentConfig.server.slug,
+            host: currentConfig.server.host,
+            publicUrl: currentConfig.server.publicUrl,
+            registrationMode: currentConfig.server.registrationMode,
+            iconAttachmentId: icon.id,
+            tls: currentConfig.server.tls,
+          },
+          auth: {
+            mode: currentConfig.auth.mode,
+            atprotoClientId: currentConfig.auth.atprotoClientId,
+            redirectUri: currentConfig.auth.redirectUri,
+            lanRedirectBaseUrl: currentConfig.auth.lanRedirectBaseUrl,
+            authorizationEndpoint: currentConfig.auth.authorizationEndpoint,
+            tokenEndpoint: currentConfig.auth.tokenEndpoint,
+            profileEndpoint: currentConfig.auth.profileEndpoint,
+            scope: currentConfig.auth.scope,
+            allowDevLogin: currentConfig.auth.allowDevLogin,
+          },
+          storage: {
+            sqlitePath: currentConfig.storage.sqlitePath,
+            uploadDir: currentConfig.storage.uploadDir,
+            mediaBackend: currentConfig.storage.mediaBackend,
+          },
+          rtc: {
+            listenIp: currentConfig.rtc.listenIp,
+            announcedIp: currentConfig.rtc.announcedIp,
+            udpMinPort: currentConfig.rtc.udpMinPort,
+            udpMaxPort: currentConfig.rtc.udpMaxPort,
+            workerCount: currentConfig.rtc.workerCount,
+            sessionTimeoutMs: currentConfig.rtc.sessionTimeoutMs,
+            turnUrls: currentConfig.rtc.turnUrls,
+            screenShare: currentConfig.rtc.screenShare,
+            camera: currentConfig.rtc.camera,
+          },
+          observability: currentConfig.observability,
+        },
+      });
+      expect(allowedFullFormIconPatch.statusCode).toBe(200);
+      expect(allowedFullFormIconPatch.json()).toMatchObject({
+        server: {
+          iconAttachmentId: icon.id,
+        },
+        restartRequiredFields: [],
+      });
+      expect(
+        (
+          db
+            .prepare('SELECT icon_attachment_id FROM servers WHERE id = ?')
+            .get(serverId) as { icon_attachment_id: string | null }
+        ).icon_attachment_id,
+      ).toBe(icon.id);
 
       const allowedCosmeticPatch = await app.inject({
         method: 'PATCH',

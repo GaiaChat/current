@@ -466,8 +466,44 @@ function hasOwnPath(value: unknown, path: string): boolean {
   return current !== undefined;
 }
 
-function requestedHostOnlyAdminSettings(body: z.infer<typeof AdminSettingsPatchSchema>): string[] {
-  return HostOnlyAdminSettingsFieldPaths.filter((path) => hasOwnPath(body, path));
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function partialValueDiffers(requestedValue: unknown, currentValue: unknown): boolean {
+  if (requestedValue === undefined) {
+    return false;
+  }
+
+  if (isPlainRecord(requestedValue) && isPlainRecord(currentValue)) {
+    return Object.entries(requestedValue).some(([key, value]) => partialValueDiffers(value, currentValue[key]));
+  }
+
+  return JSON.stringify(requestedValue) !== JSON.stringify(currentValue);
+}
+
+function hasChangedHostOnlySetting(
+  body: z.infer<typeof AdminSettingsPatchSchema>,
+  current: CurrentConfig,
+  path: string,
+): boolean {
+  if (!hasOwnPath(body, path)) {
+    return false;
+  }
+
+  const requestedValue = getByPath(body, path);
+  if (requestedValue === undefined) {
+    return false;
+  }
+
+  return partialValueDiffers(requestedValue, getByPath(current, path));
+}
+
+function requestedHostOnlyAdminSettings(
+  body: z.infer<typeof AdminSettingsPatchSchema>,
+  current: CurrentConfig,
+): string[] {
+  return HostOnlyAdminSettingsFieldPaths.filter((path) => hasChangedHostOnlySetting(body, current, path));
 }
 
 function changedRestartFields(before: CurrentConfig, after: CurrentConfig): string[] {
@@ -793,7 +829,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
 
-    const hostOnlyFields = requestedHostOnlyAdminSettings(body.data);
+    const before = app.appContext.serverConfig.get();
+    const hostOnlyFields = requestedHostOnlyAdminSettings(body.data, before);
     if (hostOnlyFields.length > 0 && !isRequestFromHostMachine(request)) {
       reply.code(403).send({
         error: {
@@ -821,7 +858,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       reply.code(400).send({ error: 'Banner asset was not found.' });
       return;
     }
-    const before = app.appContext.serverConfig.get();
     const appearanceAttachmentId = body.data.appearance?.backgroundAttachmentId;
     const isExistingBackgroundReference = appearanceAttachmentId === before.appearance.backgroundAttachmentId;
     if (!isExistingBackgroundReference && !validateAssetBelongsToUpload(app, appearanceAttachmentId)) {

@@ -807,6 +807,34 @@ function mibToBytes(mib: number): number {
   return Math.round(mib * BYTES_PER_MIB);
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function pruneUnchangedSettings(next: unknown, previous: unknown): unknown {
+  if (!isPlainRecord(next) || !isPlainRecord(previous)) {
+    return valuesEqual(next, previous) ? undefined : next;
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(next)) {
+    const pruned = pruneUnchangedSettings(value, previous[key]);
+    if (pruned !== undefined) {
+      result[key] = pruned;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function hasSettingsPatchFields(value: unknown): boolean {
+  return isPlainRecord(value) && Object.keys(value).length > 0;
+}
+
 function formatPermission(permission: Permission): string {
   return permission
     .toLowerCase()
@@ -819,7 +847,7 @@ function isRestartField(path: string, settings?: ServerSettingsPayload): boolean
   return Boolean(settings?.restartRequiredFieldPaths?.includes(path));
 }
 
-function buildSettingsPatch(draft: SettingsDraft) {
+function buildFullSettingsPatch(draft: SettingsDraft) {
   return {
     server: {
       name: draft.server.name,
@@ -947,6 +975,15 @@ function buildSettingsPatch(draft: SettingsDraft) {
       logLevel: draft.observability.logLevel,
     },
   };
+}
+
+function buildSettingsPatch(draft: SettingsDraft, savedDraft?: SettingsDraft | null) {
+  const next = buildFullSettingsPatch(draft);
+  if (!savedDraft) {
+    return next;
+  }
+
+  return pruneUnchangedSettings(next, buildFullSettingsPatch(savedDraft)) ?? {};
 }
 
 async function uploadServerAsset(kind: ServerAssetKind, file: File) {
@@ -1384,7 +1421,11 @@ export function ServerSettingsModal({
       if (!draft) {
         throw new Error('Settings are still loading.');
       }
-      return apiPatch<ServerSettingsPayload>('/api/v1/admin/settings', buildSettingsPatch(draft));
+      const patch = buildSettingsPatch(draft, savedDraft);
+      if (!hasSettingsPatchFields(patch)) {
+        throw new Error('No settings changes to save.');
+      }
+      return apiPatch<ServerSettingsPayload>('/api/v1/admin/settings', patch);
     },
     onSuccess: async (payload) => {
       const next = createDraft(payload);
