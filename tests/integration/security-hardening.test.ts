@@ -142,7 +142,15 @@ async function expectGatewayDoesNotReplayMessage(input: {
 
 describe('security hardening', () => {
   it('blocks disallowed browser origins for credentialed API and gateway traffic', async () => {
-    const { app, close } = await createTestApp();
+    const { app, context, close } = await createTestApp();
+    const config = context.serverConfig.get();
+    context.serverConfig.set({
+      ...config,
+      auth: {
+        ...config.auth,
+        lanRedirectBaseUrl: 'http://lan.example.test:6414',
+      },
+    });
 
     const health = await app.inject({
       method: 'GET',
@@ -153,6 +161,16 @@ describe('security hardening', () => {
     });
     expect(health.statusCode).toBe(200);
     expect(health.headers['access-control-allow-origin']).not.toBe('https://evil.example');
+
+    const staleLanHealth = await app.inject({
+      method: 'GET',
+      url: '/api/v1/health',
+      headers: {
+        origin: 'http://lan.example.test:6414',
+      },
+    });
+    expect(staleLanHealth.statusCode).toBe(200);
+    expect(staleLanHealth.headers['access-control-allow-origin']).not.toBe('http://lan.example.test:6414');
 
     const blockedWrite = await app.inject({
       method: 'POST',
@@ -167,6 +185,20 @@ describe('security hardening', () => {
     });
     expect(blockedWrite.statusCode).toBe(403);
     expect((blockedWrite.json() as { error: { code: string } }).error.code).toBe('ORIGIN_NOT_ALLOWED');
+
+    const staleLanWrite = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/dev-login',
+      headers: {
+        origin: 'http://lan.example.test:6414',
+      },
+      payload: {
+        handle: 'stale-lan-origin@current',
+        displayName: 'Stale LAN Origin',
+      },
+    });
+    expect(staleLanWrite.statusCode).toBe(403);
+    expect((staleLanWrite.json() as { error: { code: string } }).error.code).toBe('ORIGIN_NOT_ALLOWED');
 
     const allowedWrite = await app.inject({
       method: 'POST',
@@ -195,6 +227,11 @@ describe('security hardening', () => {
     await expectGatewayRejected({
       url: gatewayUrl,
       origin: 'https://evil.example',
+      sessionToken,
+    });
+    await expectGatewayRejected({
+      url: gatewayUrl,
+      origin: 'http://lan.example.test:6414',
       sessionToken,
     });
     await expectGatewayReady({
@@ -248,8 +285,16 @@ describe('security hardening', () => {
   });
 
   it('requires the browser claim token before exposing LAN OAuth handoff tickets', async () => {
-    const { app, db, close } = await createTestApp();
+    const { app, db, context, close } = await createTestApp({ serverInstance: 'lan' });
     const now = Date.now();
+    const config = context.serverConfig.get();
+    context.serverConfig.set({
+      ...config,
+      auth: {
+        ...config.auth,
+        mode: 'atproto',
+      },
+    });
 
     try {
       db.prepare(

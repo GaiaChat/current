@@ -891,8 +891,9 @@ async function verifyLauncherAccessTokenWithResource(input: {
 }
 
 function resolveServerOrigin(app: FastifyInstance, returnTo?: string): URL {
-  const lanRedirectBaseUrl = app.appContext.serverConfig.get().auth.lanRedirectBaseUrl.trim();
-  if (lanRedirectBaseUrl) {
+  const config = app.appContext.serverConfig.get();
+  const lanRedirectBaseUrl = config.auth.lanRedirectBaseUrl.trim();
+  if (app.appContext.serverInstance === 'lan' && lanRedirectBaseUrl) {
     try {
       const configuredLanOrigin = new URL(lanRedirectBaseUrl);
       if (configuredLanOrigin.protocol === 'http:' || configuredLanOrigin.protocol === 'https:') {
@@ -907,7 +908,7 @@ function resolveServerOrigin(app: FastifyInstance, returnTo?: string): URL {
   }
 
   try {
-    const configured = new URL(app.appContext.serverConfig.get().server.publicUrl);
+    const configured = new URL(config.server.publicUrl);
     if (!isLoopbackHost(configured.hostname)) {
       return configured;
     }
@@ -919,7 +920,7 @@ function resolveServerOrigin(app: FastifyInstance, returnTo?: string): URL {
     try {
       const parsedReturnTo = new URL(returnTo);
       if (parsedReturnTo.protocol === 'http:' || parsedReturnTo.protocol === 'https:') {
-        const port = app.appContext.serverConfig.get().server.port;
+        const port = config.server.port;
         parsedReturnTo.port = String(port);
         parsedReturnTo.pathname = '';
         parsedReturnTo.search = '';
@@ -931,10 +932,12 @@ function resolveServerOrigin(app: FastifyInstance, returnTo?: string): URL {
     }
   }
 
-  return new URL(`http://127.0.0.1:${app.appContext.serverConfig.get().server.port}`);
+  return new URL(`http://127.0.0.1:${config.server.port}`);
 }
 
 export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
+  const isLanServerInstance = (): boolean => app.appContext.serverInstance === 'lan';
+
   const ensureAtprotoMode = (reply: FastifyReply): boolean => {
     if (app.appContext.serverConfig.get().auth.mode === 'atproto') {
       return true;
@@ -944,6 +947,36 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       error: {
         code: 'ATPROTO_AUTH_DISABLED',
         message: 'ATProto OAuth is disabled for this instance. Use LAN screen-name sign-in.',
+      },
+    });
+    return false;
+  };
+
+  const ensureLanHandoffEnabled = (
+    reply: FastifyReply,
+    options: { html?: boolean } = {},
+  ): boolean => {
+    if (isLanServerInstance() && app.appContext.serverConfig.get().auth.mode === 'atproto') {
+      return true;
+    }
+
+    if (options.html) {
+      reply
+        .code(404)
+        .type('text/html')
+        .send(
+          buildLanHandoffPage({
+            title: 'Handoff Unavailable',
+            message: 'This login handoff is not available on this server.',
+          }),
+        );
+      return false;
+    }
+
+    reply.code(404).send({
+      error: {
+        code: 'LAN_HANDOFF_DISABLED',
+        message: 'LAN OAuth handoff is not available on this server.',
       },
     });
     return false;
@@ -1013,6 +1046,19 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
     } catch (error) {
       const code = (error as { code?: string } | null)?.code;
       if (code === LOOPBACK_REMOTE_RETURN_TO_CODE && parsed.data.returnTo) {
+        if (!isLanServerInstance()) {
+          reply.code(400).send({
+            error: {
+              code: LOOPBACK_REMOTE_RETURN_TO_CODE,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : 'This server is using loopback ATProto OAuth and can only complete sign-in on the host machine.',
+            },
+          });
+          return;
+        }
+
         if (isRequestFromHostMachine(request)) {
           try {
             const start = await app.appContext.auth.startOAuth({
@@ -1076,7 +1122,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/auth/lan/handoffs/:handoffId/start', async (request, reply) => {
-    if (!ensureAtprotoMode(reply)) {
+    if (!ensureLanHandoffEnabled(reply, { html: true })) {
       return;
     }
 
@@ -1153,7 +1199,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/auth/lan/handoffs/:handoffId/complete', async (request, reply) => {
-    if (!ensureAtprotoMode(reply)) {
+    if (!ensureLanHandoffEnabled(reply, { html: true })) {
       return;
     }
 
@@ -1231,7 +1277,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/auth/lan/handoffs/:handoffId', async (request, reply) => {
-    if (!ensureAtprotoMode(reply)) {
+    if (!ensureLanHandoffEnabled(reply)) {
       return;
     }
 
@@ -1297,7 +1343,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/auth/lan/handoffs/:handoffId/claim', async (request, reply) => {
-    if (!ensureAtprotoMode(reply)) {
+    if (!ensureLanHandoffEnabled(reply)) {
       return;
     }
 
@@ -1410,6 +1456,7 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
             target: redirectTo,
             requestHost: request.headers.host,
             config: app.appContext.serverConfig.get(),
+            serverInstance: app.appContext.serverInstance,
           })
         ) {
           response.redirect('/');

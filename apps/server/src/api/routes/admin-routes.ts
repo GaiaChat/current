@@ -523,13 +523,14 @@ function roleIdsGrantPermission(roles: Role[], roleIds: string[], permission: Pe
 }
 
 function buildRedactedConfig(app: FastifyInstance, config: CurrentConfig) {
+  const isLanServerInstance = app.appContext.serverInstance === 'lan';
   return {
     server: config.server,
     auth: {
       mode: config.auth.mode,
       atprotoClientId: config.auth.atprotoClientId,
       redirectUri: config.auth.redirectUri,
-      lanRedirectBaseUrl: config.auth.lanRedirectBaseUrl,
+      lanRedirectBaseUrl: isLanServerInstance ? config.auth.lanRedirectBaseUrl : '',
       authorizationEndpoint: config.auth.authorizationEndpoint,
       tokenEndpoint: config.auth.tokenEndpoint,
       profileEndpoint: config.auth.profileEndpoint,
@@ -579,6 +580,7 @@ function buildRedactedConfig(app: FastifyInstance, config: CurrentConfig) {
 
 function buildSettingsPayload(app: FastifyInstance, restartRequiredFields: string[] = []) {
   const config = app.appContext.serverConfig.get();
+  const isLanServerInstance = app.appContext.serverInstance === 'lan';
   const serverRecord = app.appContext.repos.servers.getPrimaryServer();
   const ownerUserId = app.appContext.setup.getOwnerUserId() ?? undefined;
   const appearance = buildPublicAppearance(app, config);
@@ -599,11 +601,12 @@ function buildSettingsPayload(app: FastifyInstance, restartRequiredFields: strin
 
   return {
     server,
+    serverInstance: app.appContext.serverInstance,
     serverVersion: getServerVersion(),
     config: buildRedactedConfig(app, config),
     auth: {
       mode: config.auth.mode,
-      lanRedirectBaseUrl: config.auth.lanRedirectBaseUrl,
+      lanRedirectBaseUrl: isLanServerInstance ? config.auth.lanRedirectBaseUrl : '',
     },
     media: {
       maxAttachmentBytes: config.media.maxAttachmentBytes,
@@ -843,6 +846,17 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const requestedLanRedirectBaseUrl = body.data.auth?.lanRedirectBaseUrl ?? body.data.lanRedirectBaseUrl;
+    if (
+      requestedLanRedirectBaseUrl !== undefined &&
+      app.appContext.serverInstance !== 'lan' &&
+      requestedLanRedirectBaseUrl.trim().length > 0
+    ) {
+      reply.code(400).send({
+        error: 'LAN handoff settings are only available on the LAN server instance.',
+      });
+      return;
+    }
+
     if (requestedLanRedirectBaseUrl !== undefined && !isValidLanRedirectBaseUrl(requestedLanRedirectBaseUrl)) {
       reply.code(400).send({
         error: 'LAN redirect base URL must be empty or a valid http(s) URL.',

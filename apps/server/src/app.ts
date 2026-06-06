@@ -43,7 +43,15 @@ export function buildApp(context: AppContext, options: BuildAppOptions = {}) {
 
   app.register(cors, {
     origin: (origin, callback) => {
-      callback(null, origin && isAllowedCorsOrigin(origin, context.serverConfig.get()) ? origin : false);
+      callback(
+        null,
+        origin &&
+          isAllowedCorsOrigin(origin, context.serverConfig.get(), {
+            serverInstance: context.serverInstance,
+          })
+          ? origin
+          : false,
+      );
     },
     credentials: true,
   });

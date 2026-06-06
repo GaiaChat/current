@@ -16,11 +16,14 @@ import type { RepositoryBag } from '../db/repositories/index.js';
 import type { AtprotoBlockService } from '../services/atproto-block-service.js';
 import type { AcmeService } from '../services/acme-service.js';
 
+export type CurrentServerInstance = 'standard' | 'lan';
+
 export interface AppContext {
   db: DatabaseSync;
   repos: RepositoryBag;
   config: CurrentConfig;
   configPath: string;
+  serverInstance: CurrentServerInstance;
   metrics: MetricsService;
   auth: AuthService;
   setup: SetupService;

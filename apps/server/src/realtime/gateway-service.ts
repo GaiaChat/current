@@ -15,6 +15,7 @@ import { id } from '../utils/id.js';
 import { nowIso } from '../utils/time.js';
 import { isAllowedRequestOrigin } from '../api/origin-guard.js';
 import { hasPermission, resolvePermissions } from '../moderation/permissions.js';
+import type { CurrentServerInstance } from '../types/context.js';
 
 const MAX_CLIENT_PAYLOAD_BYTES = 64 * 1024;
 const TYPING_REFRESH_BROADCAST_MS = 3_500;
@@ -52,6 +53,7 @@ export class GatewayService {
     private readonly metrics: MetricsService,
     private readonly atprotoBlocks: AtprotoBlockService,
     private readonly getConfig: () => CurrentConfig,
+    private readonly serverInstance: CurrentServerInstance,
   ) {}
 
   attach(server: HttpServer): void {
@@ -70,6 +72,7 @@ export class GatewayService {
         origin: request.headers.origin,
         host: request.headers.host,
         config: this.getConfig(),
+        serverInstance: this.serverInstance,
       })) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         socket.destroy();

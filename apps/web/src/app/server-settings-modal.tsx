@@ -186,6 +186,7 @@ interface RedactedConfig {
 }
 
 interface ServerSettingsPayload {
+  serverInstance?: 'standard' | 'lan';
   serverVersion?: string;
   server: {
     id?: string;
@@ -2034,6 +2035,7 @@ export function ServerSettingsModal({
       return <div className="settings-empty-inline">Loading server settings...</div>;
     }
     const serverVersion = settingsQuery.data?.serverVersion?.trim();
+    const isLanServerInstance = settingsQuery.data?.serverInstance === 'lan';
     return (
       <div className="settings-panel-grid">
         <section className="settings-panel wide">
@@ -2096,10 +2098,12 @@ export function ServerSettingsModal({
               <option value="lan">LAN screen-name</option>
             </select>
           </label>
-          <label>
-            {renderFieldLabel('LAN handoff base URL')}
-            <input value={draft.auth.lanRedirectBaseUrl} onChange={(event) => updateDraft('auth', { lanRedirectBaseUrl: event.target.value })} />
-          </label>
+          {isLanServerInstance && (
+            <label>
+              {renderFieldLabel('LAN handoff base URL')}
+              <input value={draft.auth.lanRedirectBaseUrl} onChange={(event) => updateDraft('auth', { lanRedirectBaseUrl: event.target.value })} />
+            </label>
+          )}
         </section>
       </div>
     );
