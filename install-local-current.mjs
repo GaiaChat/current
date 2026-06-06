@@ -5,21 +5,29 @@ import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const minimumNodeMajor = 20;
+function hasCurrentManifest(dir) {
+  return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
+}
+
+function resolveCurrentRoot() {
+  const scriptDir = resolve(dirname(fileURLToPath(import.meta.url)));
+  for (const candidate of [process.cwd(), scriptDir, dirname(scriptDir)]) {
+    const resolved = resolve(candidate);
+    if (hasCurrentManifest(resolved)) {
+      return resolved;
+    }
+  }
+  return scriptDir;
+}
+
+const rootDir = resolveCurrentRoot();
+const minimumNodeVersion = '24.0.0';
 const skipBuild = process.argv.includes('--skip-build');
 const reinstallRequested = process.argv.includes('--reinstall');
 const assumeYes = process.argv.includes('--yes') || process.argv.includes('-y');
 const releaseInfoPath = join(rootDir, 'release-info.json');
-const frozenLockfile =
-  process.argv.includes('--frozen-lockfile') ||
-  process.env.CI === 'true';
-const buildTargets = [
-  '@current/types',
-  '@current/protocol',
-  '@current/config',
-  '@current/ui',
-];
+const frozenLockfile = process.argv.includes('--frozen-lockfile') || process.env.CI === 'true';
+const buildTargets = ['@current/types', '@current/protocol', '@current/config', '@current/ui'];
 const symlinkSafePnpmArgs = [
   '--config.node-linker=hoisted',
   '--config.package-import-method=copy',
@@ -80,18 +88,40 @@ function commandStdout(command, args = ['--version']) {
 
 function readPnpmVersion() {
   const packageJson = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
-  const packageManager = typeof packageJson.packageManager === 'string'
-    ? packageJson.packageManager
-    : '';
+  const packageManager =
+    typeof packageJson.packageManager === 'string' ? packageJson.packageManager : '';
   const match = /^pnpm@(.+)$/.exec(packageManager);
   return match?.[1] ?? '11.3.0';
 }
 
+function parseVersionParts(version) {
+  return version
+    .split('.')
+    .map((part) => Number(part))
+    .map((part) => (Number.isInteger(part) && part >= 0 ? part : 0));
+}
+
+function compareVersions(left, right) {
+  const leftParts = parseVersionParts(left);
+  const rightParts = parseVersionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 function ensureNodeVersion() {
-  const major = Number(process.versions.node.split('.')[0]);
-  if (!Number.isInteger(major) || major < minimumNodeMajor) {
+  if (compareVersions(process.versions.node, minimumNodeVersion) < 0) {
     throw new Error(
-      `Node.js ${minimumNodeMajor}+ is required. Current Node.js is ${process.versions.node}.`,
+      `Node.js ${minimumNodeVersion}+ is required. Current Node.js is ${process.versions.node}.`,
     );
   }
 }
@@ -125,22 +155,87 @@ async function askYesNo(question, defaultValue = false) {
   }
 }
 
-function setupLooksComplete(releaseBundle) {
-  if (!existsSync(join(rootDir, 'node_modules', '.pnpm'))) {
+function filesMatch(leftPath, rightPath) {
+  try {
+    return readFileSync(leftPath).equals(readFileSync(rightPath));
+  } catch {
     return false;
   }
-  if (releaseBundle) {
-    return existsSync(join(rootDir, 'node_modules', 'fastify', 'package.json'));
+}
+
+function dependencySetupReason(releaseBundle) {
+  if (!existsSync(join(rootDir, 'node_modules', '.pnpm'))) {
+    return `missing ${join('node_modules', '.pnpm')}`;
   }
-  return buildTargets.every((target) => {
-    const packageDir = target.replace(/^@current\//, '');
-    return existsSync(join(rootDir, 'packages', packageDir, 'dist'));
-  });
+  if (releaseBundle) {
+    if (!existsSync(join(rootDir, 'node_modules', 'fastify', 'package.json'))) {
+      return `missing ${join('node_modules', 'fastify', 'package.json')}`;
+    }
+    if (!existsSync(join(rootDir, 'node_modules', 'acme-client', 'package.json'))) {
+      return `missing ${join('node_modules', 'acme-client', 'package.json')}`;
+    }
+  } else {
+    const missingBuildTarget = buildTargets.find((target) => {
+      const packageDir = target.replace(/^@current\//, '');
+      return !existsSync(join(rootDir, 'packages', packageDir, 'dist'));
+    });
+    if (missingBuildTarget) {
+      return `missing build output for ${missingBuildTarget}`;
+    }
+  }
+
+  const projectLockfile = join(rootDir, 'pnpm-lock.yaml');
+  const installedLockfile = join(rootDir, 'node_modules', '.pnpm', 'lock.yaml');
+  if (existsSync(projectLockfile)) {
+    if (!existsSync(installedLockfile)) {
+      return `missing ${join('node_modules', '.pnpm', 'lock.yaml')}`;
+    }
+    if (!filesMatch(projectLockfile, installedLockfile)) {
+      return 'pnpm-lock.yaml changed since dependencies were installed';
+    }
+  }
+
+  return null;
+}
+
+function setupLooksComplete(releaseBundle) {
+  return dependencySetupReason(releaseBundle) === null;
 }
 
 function resolvePackageManager() {
   const pnpmVersion = readPnpmVersion();
+  const pnpm = commandName('pnpm');
+  const installedPnpmVersion = commandStdout(pnpm);
+  if (installedPnpmVersion === pnpmVersion) {
+    return {
+      label: `pnpm ${pnpmVersion}`,
+      command: pnpm,
+      prefixArgs: [],
+    };
+  }
+
   const npx = commandName('npx');
+  const corepack = commandName('corepack');
+  if (commandWorks(corepack, ['--version'])) {
+    spawnSync(corepack, ['enable'], {
+      cwd: rootDir,
+      stdio: 'ignore',
+      shell: false,
+    });
+    const prepare = spawnSync(corepack, ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
+      cwd: rootDir,
+      stdio: 'ignore',
+      shell: false,
+    });
+    if (prepare.status === 0) {
+      return {
+        label: `pnpm ${pnpmVersion} via corepack`,
+        command: corepack,
+        prefixArgs: ['pnpm'],
+      };
+    }
+  }
+
   if (commandWorks(npx)) {
     return {
       label: `pnpm ${pnpmVersion} via npx`,
@@ -149,36 +244,14 @@ function resolvePackageManager() {
     };
   }
 
-  const corepack = commandName('corepack');
-  if (commandWorks(corepack)) {
-    spawnSync(corepack, ['enable'], {
-      cwd: rootDir,
-      stdio: 'ignore',
-      shell: false,
-    });
-    spawnSync(corepack, ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
-      cwd: rootDir,
-      stdio: 'ignore',
-      shell: false,
-    });
-    return {
-      label: `pnpm ${pnpmVersion} via corepack`,
-      command: corepack,
-      prefixArgs: ['pnpm'],
-    };
-  }
-
-  const pnpm = commandName('pnpm');
-  if (commandStdout(pnpm) === pnpmVersion) {
-    return {
-      label: `pnpm ${pnpmVersion}`,
-      command: pnpm,
-      prefixArgs: [],
-    };
+  if (installedPnpmVersion) {
+    throw new Error(
+      `Found pnpm ${installedPnpmVersion}, but this project pins pnpm ${pnpmVersion}. Enable corepack or install the pinned pnpm version.`,
+    );
   }
 
   throw new Error(
-    `Could not run pnpm@${pnpmVersion}. Install Node.js ${minimumNodeMajor}+ with npm/npx, enable corepack, or install pnpm ${pnpmVersion}.`,
+    `Could not run pnpm@${pnpmVersion}. Install Node.js ${minimumNodeVersion}+ with npm/npx, enable corepack, or install pnpm ${pnpmVersion}.`,
   );
 }
 
@@ -194,23 +267,24 @@ async function main() {
   console.log(`[Current install] Repo: ${rootDir}`);
   console.log(`[Current install] Package manager: ${packageManager.label}`);
 
-  if (!reinstallRequested && setupLooksComplete(releaseBundle)) {
+  const setupReason = dependencySetupReason(releaseBundle);
+  if (!reinstallRequested && setupReason === null) {
     const shouldReinstall = await askYesNo(
       '[Current install] Current setup already appears complete. Try reinstalling this update?',
       false,
     );
     if (!shouldReinstall) {
       console.log('[Current install] No changes made.');
-      console.log('[Current install] Run Current with the launcher for your OS.');
+      console.log('[Current install] Run Current with Run Current.mjs.');
       return;
     }
   } else if (reinstallRequested) {
     console.log('[Current install] Reinstall requested. Reinstalling this update.');
+  } else {
+    console.log(`[Current install] Setup needed: ${setupReason}.`);
   }
 
-  const installArgs = releaseBundle
-    ? ['install', '--prod', ...symlinkSafePnpmArgs]
-    : ['install'];
+  const installArgs = releaseBundle ? ['install', '--prod', ...symlinkSafePnpmArgs] : ['install'];
   if (frozenLockfile && existsSync(join(rootDir, 'pnpm-lock.yaml'))) {
     installArgs.push('--frozen-lockfile');
   }
@@ -223,7 +297,7 @@ async function main() {
 
   if (releaseBundle) {
     console.log('[Current install] Release bundle setup complete.');
-    console.log('[Current install] Run Current with the launcher for your OS.');
+    console.log('[Current install] Run Current with Run Current.mjs.');
     return;
   }
 
@@ -234,7 +308,7 @@ async function main() {
   }
 
   console.log('[Current install] Setup complete.');
-  console.log('[Current install] Run Current with the launcher for your OS.');
+  console.log('[Current install] Run Current with Run Current.mjs.');
 }
 
 main().catch((error) => {

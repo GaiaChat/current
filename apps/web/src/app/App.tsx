@@ -29,6 +29,7 @@ import type {
   ServerAccessRequest,
   ServerAccessState,
   ServerAppearance,
+  UserAudioActivity,
   UserPresence,
   UserPresenceDisplayStatus,
   UserPresenceStatus,
@@ -79,6 +80,7 @@ import {
 } from './emoji-skin-tones';
 
 const CURRENT_LOGO_URL = new URL('../../../../assets/logo_grayscale.svg', import.meta.url).href;
+const SPOTIFY_PRIMARY_LOGO_URL = '/spotify-primary-logo-green.svg';
 const MESSAGE_NOTIFICATION_URL = new URL(
   '../../../../assets/audio/message/notification.mp3',
   import.meta.url,
@@ -253,6 +255,13 @@ type SetupStatus = {
   network?: {
     port?: number;
     publicUrl?: string;
+    serverAddress?: string;
+  };
+  ownership?: {
+    ownerUserId?: string;
+    verificationRequired?: boolean;
+    verificationCodeLength?: number;
+    verificationCodeActive?: boolean;
   };
   server?: {
     id?: string;
@@ -875,7 +884,7 @@ const PAGE_SCROLL_THRESHOLD_PX = 120;
 const MESSAGE_BOTTOM_THRESHOLD_PX = 96;
 const MESSAGE_HOVER_TOOLBAR_MIN_TOP_SPACE = 44;
 const MEMBER_PROFILE_POPOUT_WIDTH = 304;
-const MEMBER_PROFILE_POPOUT_ESTIMATED_HEIGHT = 320;
+const MEMBER_PROFILE_POPOUT_ESTIMATED_HEIGHT = 396;
 const MEMBER_PROFILE_POPOUT_GAP = 12;
 const TYPING_IDLE_MS = 4_500;
 const TYPING_HEARTBEAT_MS = 2_200;
@@ -2066,6 +2075,24 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function getMemberProfilePopoverPlacement(
+  memberId: string,
+  rect: DOMRect | DOMRectReadOnly,
+): MemberProfilePopoverState {
+  const preferredLeft = rect.left - MEMBER_PROFILE_POPOUT_WIDTH - MEMBER_PROFILE_POPOUT_GAP;
+  const fallbackLeft = rect.right + MEMBER_PROFILE_POPOUT_GAP;
+  const maxLeft = Math.max(12, window.innerWidth - MEMBER_PROFILE_POPOUT_WIDTH - 12);
+  const left = preferredLeft >= 12 ? preferredLeft : clampNumber(fallbackLeft, 12, maxLeft);
+  const maxTop = Math.max(12, window.innerHeight - MEMBER_PROFILE_POPOUT_ESTIMATED_HEIGHT - 12);
+  const top = clampNumber(rect.top - 10, 12, maxTop);
+
+  return {
+    memberId,
+    left,
+    top,
+  };
+}
+
 function getMemberCreatedAtTimestamp(member: SessionPayload['user'] | MemberPayload): number {
   if ('createdAt' in member && typeof member.createdAt === 'string') {
     const value = Date.parse(member.createdAt);
@@ -2092,6 +2119,39 @@ function getPresenceLabel(status: UserPresenceDisplayStatus): string {
 
 function getMemberPresenceLabel(status: UserPresenceDisplayStatus): string {
   return status === 'invisible' ? 'Offline' : getPresenceLabel(status);
+}
+
+function getAudioActivityArtistLabel(activity: UserAudioActivity): string {
+  return activity.artists.length > 0 ? activity.artists.join(', ') : 'Spotify';
+}
+
+function getActiveAudioActivity(
+  activity: UserAudioActivity | undefined,
+): UserAudioActivity | undefined {
+  if (!activity?.isPlaying) {
+    return undefined;
+  }
+
+  const expiresAt = Date.parse(activity.expiresAt);
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+    return undefined;
+  }
+
+  return activity;
+}
+
+function getAudioActivityMarqueeLabel(activity: UserAudioActivity): string {
+  const artist = getAudioActivityArtistLabel(activity);
+  return artist ? `${activity.title} - ${artist}` : activity.title;
+}
+
+function getAudioActivityExternalUrl(activity: UserAudioActivity): string {
+  if (activity.trackUrl) {
+    return activity.trackUrl;
+  }
+
+  const query = [activity.title, ...activity.artists].join(' ').trim();
+  return `https://open.spotify.com/search/${encodeURIComponent(query || activity.title)}`;
 }
 
 function isVisibleOnlinePresence(presence: UserPresence): boolean {
@@ -2498,7 +2558,15 @@ function ScreenShareVideo({
     }
   }, [stream]);
 
-  return <video ref={videoRef} autoPlay playsInline muted={muted} className={mirrored ? 'mirrored' : undefined} />;
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted={muted}
+      className={mirrored ? 'mirrored' : undefined}
+    />
+  );
 }
 
 function VoiceMicMeter({
@@ -2669,6 +2737,7 @@ export function App() {
   const [selfPresenceStatus, setSelfPresenceStatus] = useState<UserPresenceStatus>('online');
   const [isPresenceMenuOpen, setIsPresenceMenuOpen] = useState(false);
   const [memberProfilePopover, setMemberProfilePopover] = useState<MemberProfilePopoverState>(null);
+  const [memberProfileGlassResizeKey, setMemberProfileGlassResizeKey] = useState(0);
   const [voiceSpeakingUserIds, setVoiceSpeakingUserIds] = useState<Set<string>>(() => new Set());
   const [pushToTalkHeld, setPushToTalkHeld] = useState(false);
   const [channelsPaneWidth, setChannelsPaneWidth] = useState(loadChannelsPaneWidth);
@@ -2726,6 +2795,7 @@ export function App() {
   const membersPaneRef = useRef<HTMLElement | null>(null);
   const knownMemberIdsRef = useRef<Set<string>>(new Set());
   const memberProfileRefreshAttemptedIdsRef = useRef<Set<string>>(new Set());
+  const memberProfilePopoutRef = useRef<HTMLElement | null>(null);
   const channelTitleGlassRef = useRef<HTMLDivElement | null>(null);
   const profileGlassRef = useRef<HTMLElement | null>(null);
   const presenceMenuRef = useRef<HTMLDivElement | null>(null);
@@ -4352,6 +4422,13 @@ export function App() {
     }
   }, [membersQuery]);
 
+  const openMemberProfilePopover = useCallback(
+    (memberId: string, rect: DOMRect | DOMRectReadOnly) => {
+      setMemberProfilePopover(getMemberProfilePopoverPlacement(memberId, rect));
+    },
+    [],
+  );
+
   const toggleMemberProfilePopover = useCallback(
     (memberId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
       const rect = event.currentTarget.getBoundingClientRect();
@@ -4360,21 +4437,7 @@ export function App() {
           return null;
         }
 
-        const preferredLeft = rect.left - MEMBER_PROFILE_POPOUT_WIDTH - MEMBER_PROFILE_POPOUT_GAP;
-        const fallbackLeft = rect.right + MEMBER_PROFILE_POPOUT_GAP;
-        const maxLeft = Math.max(12, window.innerWidth - MEMBER_PROFILE_POPOUT_WIDTH - 12);
-        const left = preferredLeft >= 12 ? preferredLeft : clampNumber(fallbackLeft, 12, maxLeft);
-        const maxTop = Math.max(
-          12,
-          window.innerHeight - MEMBER_PROFILE_POPOUT_ESTIMATED_HEIGHT - 12,
-        );
-        const top = clampNumber(rect.top - 10, 12, maxTop);
-
-        return {
-          memberId,
-          left,
-          top,
-        };
+        return getMemberProfilePopoverPlacement(memberId, rect);
       });
     },
     [],
@@ -5073,6 +5136,7 @@ export function App() {
     () => (isLanMode ? memberList.filter((member) => isLanIdentity(member)) : memberList),
     [isLanMode, memberList],
   );
+  const memberProfilePopoverMemberId = memberProfilePopover?.memberId ?? null;
 
   useEffect(() => {
     knownMemberIdsRef.current = new Set(memberList.map((member) => member.id));
@@ -5098,7 +5162,11 @@ export function App() {
       if (!(target instanceof Element)) {
         return;
       }
-      if (target.closest('.member-profile-popout') || target.closest('.member-profile-trigger')) {
+      if (
+        target.closest('.member-profile-popout') ||
+        target.closest('.member-profile-trigger') ||
+        target.closest('.message-author-profile-trigger')
+      ) {
         return;
       }
       setMemberProfilePopover(null);
@@ -5121,6 +5189,49 @@ export function App() {
       window.removeEventListener('resize', closeOnResize);
     };
   }, [memberProfilePopover]);
+
+  useLayoutEffect(() => {
+    if (!memberProfilePopoverMemberId) {
+      return undefined;
+    }
+
+    const element = memberProfilePopoutRef.current;
+    if (!element) {
+      setMemberProfileGlassResizeKey((key) => key + 1);
+      return undefined;
+    }
+
+    const readSize = () => {
+      const rect = element.getBoundingClientRect();
+      return {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    };
+
+    let lastSize = readSize();
+    const syncGlassSize = () => {
+      const nextSize = readSize();
+      if (nextSize.width === lastSize.width && nextSize.height === lastSize.height) {
+        return;
+      }
+      lastSize = nextSize;
+      setMemberProfileGlassResizeKey((key) => key + 1);
+    };
+
+    const frame = window.requestAnimationFrame(() => {
+      syncGlassSize();
+      setMemberProfileGlassResizeKey((key) => key + 1);
+    });
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(syncGlassSize);
+    resizeObserver?.observe(element);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+    };
+  }, [memberProfilePopoverMemberId]);
 
   useEffect(() => {
     if (!presenceQuery.data) {
@@ -7071,7 +7182,8 @@ export function App() {
     currentChannel?.id,
     currentChannel?.type,
   ]);
-  const selectedVoiceShareCount = selectedVoiceScreenShares.length + selectedVoiceCameraShares.length;
+  const selectedVoiceShareCount =
+    selectedVoiceScreenShares.length + selectedVoiceCameraShares.length;
   const isSharingCurrentVoiceChannel = Boolean(
     currentChannel?.type === 'voice' &&
     screenShareClient.localShare?.share.channelId === currentChannel.id,
@@ -7585,7 +7697,10 @@ export function App() {
     setupQuery.data?.configured && setupQuery.data.server?.registrationMode === 'invite_only',
   );
   const activeMemberProfileMember = memberProfilePopover
-    ? (membersById.get(memberProfilePopover.memberId) ?? null)
+    ? (membersById.get(memberProfilePopover.memberId) ??
+      (sessionQuery.data?.user.id === memberProfilePopover.memberId
+        ? sessionQuery.data.user
+        : null))
     : null;
 
   useEffect(() => {
@@ -7632,6 +7747,11 @@ export function App() {
         owner={sessionQuery.data.user}
         authMode={setupQuery.data?.authMode ?? 'atproto'}
         serverPort={setupQuery.data?.network?.port}
+        initialServerAddress={
+          setupQuery.data?.network?.serverAddress ?? setupQuery.data?.network?.publicUrl
+        }
+        ownerVerificationRequired={Boolean(setupQuery.data?.ownership?.verificationRequired)}
+        ownerVerificationCodeLength={setupQuery.data?.ownership?.verificationCodeLength}
         onConfigured={handleSetupConfigured}
       />
     );
@@ -7726,6 +7846,7 @@ export function App() {
         connected: false,
       })
     : null;
+  const memberProfileAudioActivity = getActiveAudioActivity(memberProfilePresence?.audioActivity);
   const selfPresence = presenceByUserId[currentUser.id] ?? {
     userId: currentUser.id,
     status: selfPresenceStatus,
@@ -8535,8 +8656,7 @@ export function App() {
               {voiceClient.status === 'requesting_microphone' && 'Requesting microphone'}
               {voiceClient.status === 'connecting' && 'Connecting voice'}
               {voiceClient.status === 'reconnecting' && 'Recovering voice'}
-              {voiceClient.status === 'permission_denied' && 'Microphone blocked'}
-              {voiceClient.status === 'insecure_origin' && 'HTTPS required for browser voice'}
+              {voiceClient.status === 'permission_denied' && (voiceClient.error ?? 'Microphone blocked')}
               {voiceClient.status === 'failed' && (voiceClient.error ?? 'Voice connection failed')}
             </div>
           )}
@@ -9120,6 +9240,7 @@ export function App() {
                     </button>
                   </div>
                 );
+                const authorMemberId = author?.id ?? message.authorId;
                 return (
                   <article
                     key={message.id}
@@ -9165,9 +9286,30 @@ export function App() {
                           </button>
                         )}
                         <div className="message-meta">
-                          <strong>
+                          <button
+                            type="button"
+                            className="message-author-profile-trigger"
+                            onPointerEnter={(event) =>
+                              openMemberProfilePopover(
+                                authorMemberId,
+                                event.currentTarget.getBoundingClientRect(),
+                              )
+                            }
+                            onFocus={(event) =>
+                              openMemberProfilePopover(
+                                authorMemberId,
+                                event.currentTarget.getBoundingClientRect(),
+                              )
+                            }
+                            onClick={(event) =>
+                              openMemberProfilePopover(
+                                authorMemberId,
+                                event.currentTarget.getBoundingClientRect(),
+                              )
+                            }
+                          >
                             {isOwnMessage ? 'You' : (author?.displayName ?? message.authorId)}
-                          </strong>
+                          </button>
                           <small>
                             {author?.handle ? formatIdentityHandle(author) : message.authorId}
                           </small>
@@ -9651,6 +9793,7 @@ export function App() {
                 const speaking = voiceState?.speaking ?? false;
                 const isSelf = member.id === currentUser.id;
                 const profileOpen = memberProfilePopover?.memberId === member.id;
+                const audioActivity = getActiveAudioActivity(presence.audioActivity);
                 const statusLabel =
                   speaking && isVisibleOnlinePresence(presence)
                     ? 'Speaking'
@@ -9682,7 +9825,18 @@ export function App() {
                         onClick={(event) => toggleMemberProfilePopover(member.id, event)}
                       >
                         <div className="member-main">
-                          <Avatar src={member.avatarUrl} name={member.displayName} size="sm" />
+                          <span className="member-avatar-wrap">
+                            <Avatar src={member.avatarUrl} name={member.displayName} size="sm" />
+                            {audioActivity && (
+                              <span
+                                className="member-music-badge"
+                                title={`Listening to ${audioActivity.title}`}
+                                aria-label={`Listening to ${audioActivity.title}`}
+                              >
+                                <img src={SPOTIFY_PRIMARY_LOGO_URL} alt="" draggable={false} />
+                              </span>
+                            )}
+                          </span>
                           <div className="member-text">
                             <strong>
                               {member.displayName}
@@ -9712,6 +9866,7 @@ export function App() {
       </aside>
       {memberProfilePopover && memberProfileMember && memberProfilePresence && (
         <section
+          ref={memberProfilePopoutRef}
           id="member-profile-popout"
           className={`member-profile-popout liquid-surface ${isOverLightBackground ? 'over-light-background' : ''}`}
           style={
@@ -9733,6 +9888,7 @@ export function App() {
             elasticity={0}
             mode="prominent"
             overLight={isOverLightBackground}
+            resizeKey={memberProfileGlassResizeKey}
           />
           <div className="member-profile-popout-banner" aria-hidden="true">
             {memberProfileBannerUrl.length > 0 && (
@@ -9770,6 +9926,28 @@ export function App() {
             </div>
             {memberProfileBio.length > 0 && (
               <p className="member-profile-popout-bio">{memberProfileBio}</p>
+            )}
+            {memberProfileAudioActivity && (
+              <a
+                className="member-profile-audio-ipod"
+                href={getAudioActivityExternalUrl(memberProfileAudioActivity)}
+                target="_blank"
+                rel="noreferrer"
+                title="Open in Spotify"
+              >
+                <img
+                  className="member-profile-spotify-logo"
+                  src={SPOTIFY_PRIMARY_LOGO_URL}
+                  alt="Spotify"
+                  draggable={false}
+                />
+                <span className="member-profile-audio-screen">
+                  <small>Spotify now playing</small>
+                  <span className="member-profile-audio-marquee">
+                    <span>{getAudioActivityMarqueeLabel(memberProfileAudioActivity)}</span>
+                  </span>
+                </span>
+              </a>
             )}
             <div className="member-profile-popout-actions">
               {memberProfileBlueskyUrl ? (
@@ -10295,11 +10473,17 @@ function SetupWizard({
   owner,
   authMode,
   serverPort,
+  initialServerAddress,
+  ownerVerificationRequired,
+  ownerVerificationCodeLength,
   onConfigured,
 }: {
   owner: SessionPayload['user'];
   authMode: AuthMode;
   serverPort?: number;
+  initialServerAddress?: string;
+  ownerVerificationRequired?: boolean;
+  ownerVerificationCodeLength?: number;
   onConfigured: (
     result: SetupBootstrapResponse,
     initialPresenceStatus: UserPresenceStatus,
@@ -10310,6 +10494,10 @@ function SetupWizard({
   const [serverName, setServerName] = useState('Current Community');
   const [slug, setSlug] = useState('current-community');
   const [slugTouched, setSlugTouched] = useState(false);
+  const [serverAddress, setServerAddress] = useState(
+    initialServerAddress || window.location.origin,
+  );
+  const [ownerVerificationCode, setOwnerVerificationCode] = useState('');
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>('invite_only');
   const [initialPresenceStatus, setInitialPresenceStatus] = useState<UserPresenceStatus>('online');
   const [defaultSlowmodeSeconds, setDefaultSlowmodeSeconds] = useState(0);
@@ -10326,7 +10514,11 @@ function SetupWizard({
   const isFinalStep = step === setupSteps.length - 1;
   const normalizedSlug = slugifyServerName(slug);
   const allowedMimePrefixes = parseSetupList(allowedMimePrefixesText);
-  const basicsValid = serverName.trim().length >= 2 && normalizedSlug.length >= 2;
+  const normalizedServerAddress = normalizeSetupServerAddress(serverAddress);
+  const basicsValid =
+    serverName.trim().length >= 2 &&
+    normalizedSlug.length >= 2 &&
+    Boolean(normalizedServerAddress);
   const preferencesValid =
     Number.isFinite(defaultSlowmodeSeconds) &&
     defaultSlowmodeSeconds >= 0 &&
@@ -10348,6 +10540,8 @@ function SetupWizard({
       apiPost<SetupBootstrapResponse>('/api/v1/setup/bootstrap', {
         serverName: serverName.trim(),
         slug: normalizedSlug,
+        serverAddress: normalizedServerAddress,
+        ownerVerificationCode: ownerVerificationCode.trim() || undefined,
         registrationMode,
         initialPresenceStatus,
         moderation: {
@@ -10438,6 +10632,28 @@ function SetupWizard({
                   }}
                 />
               </label>
+              <label>
+                Server address
+                <input
+                  value={serverAddress}
+                  onChange={(event) => setServerAddress(event.target.value)}
+                  placeholder="https://chat.example.com"
+                />
+              </label>
+              {ownerVerificationRequired && (
+                <label>
+                  Owner verification code
+                  <input
+                    value={ownerVerificationCode}
+                    onChange={(event) => setOwnerVerificationCode(event.target.value)}
+                    placeholder={
+                      ownerVerificationCodeLength
+                        ? `${'0'.repeat(Math.min(4, ownerVerificationCodeLength))}-${'0'.repeat(Math.max(0, ownerVerificationCodeLength - 4))}`
+                        : '1234-5678'
+                    }
+                  />
+                </label>
+              )}
               <p className="setup-note setup-port-note">
                 <strong>Port to forward:</strong> TCP {portToForward}. Forward this router or
                 firewall port to the machine running Current.
@@ -10454,7 +10670,10 @@ function SetupWizard({
                 </select>
               </label>
             </div>
-            <p className="setup-note">Default spaces: #general for text and lounge for voice.</p>
+            <p className="setup-note">
+              Server address is the link people use to open Current. The owner code is required
+              when claiming ownership from a remote browser.
+            </p>
           </section>
         )}
 
@@ -10611,6 +10830,21 @@ function SetupWizard({
 function normalizeSetupPort(value: unknown): number | null {
   const port = Number(value);
   return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+}
+
+function normalizeSetupServerAddress(value: string): string {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return '';
+    }
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
 }
 
 function ServerRemovalScreen({ notice }: { notice: ServerRemovalNotice }) {

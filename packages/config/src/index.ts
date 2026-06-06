@@ -31,11 +31,39 @@ const CurrentConfigSchema = z.object({
         enabled: z.boolean().default(false),
         certPath: z.string().default(''),
         keyPath: z.string().default(''),
+        acme: z
+          .object({
+            mode: z.enum(['off', 'manual', 'acme', 'proxy']).default('off'),
+            email: z.string().default(''),
+            domain: z.string().default(''),
+            directoryUrl: z
+              .string()
+              .url()
+              .default('https://acme-v02.api.letsencrypt.org/directory'),
+            certDir: z.string().default(''),
+            renewBeforeDays: z.number().int().min(1).max(90).default(30),
+          })
+          .default({
+            mode: 'off',
+            email: '',
+            domain: '',
+            directoryUrl: 'https://acme-v02.api.letsencrypt.org/directory',
+            certDir: '',
+            renewBeforeDays: 30,
+          }),
       })
       .default({
         enabled: false,
         certPath: '',
         keyPath: '',
+        acme: {
+          mode: 'off',
+          email: '',
+          domain: '',
+          directoryUrl: 'https://acme-v02.api.letsencrypt.org/directory',
+          certDir: '',
+          renewBeforeDays: 30,
+        },
       }),
   }),
   auth: z.object({
@@ -268,6 +296,16 @@ export function createDefaultConfig(partial: DeepPartial<CurrentConfig> = {}): C
         enabled: partial.server?.tls?.enabled ?? false,
         certPath: partial.server?.tls?.certPath ?? '',
         keyPath: partial.server?.tls?.keyPath ?? '',
+        acme: {
+          mode: partial.server?.tls?.acme?.mode ?? 'off',
+          email: partial.server?.tls?.acme?.email ?? '',
+          domain: partial.server?.tls?.acme?.domain ?? '',
+          directoryUrl:
+            partial.server?.tls?.acme?.directoryUrl ??
+            'https://acme-v02.api.letsencrypt.org/directory',
+          certDir: partial.server?.tls?.acme?.certDir ?? '',
+          renewBeforeDays: partial.server?.tls?.acme?.renewBeforeDays ?? 30,
+        },
       },
     },
     auth: {

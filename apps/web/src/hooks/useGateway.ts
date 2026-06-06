@@ -8,6 +8,13 @@ export interface GatewayEnvelope {
   sentAt: string;
 }
 
+export function buildGatewayUrl(lastEventSeq: number, location: Location = window.location): string {
+  const gatewayUrl = new URL('/gateway', location.href);
+  gatewayUrl.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  gatewayUrl.searchParams.set('lastEventSeq', String(lastEventSeq));
+  return gatewayUrl.toString();
+}
+
 export function useGateway(enabled: boolean, onEvent: (event: GatewayEnvelope) => void) {
   const [status, setStatus] = useState<'offline' | 'connecting' | 'online'>('offline');
   const [lastSeq, setLastSeq] = useState(0);
@@ -20,7 +27,7 @@ export function useGateway(enabled: boolean, onEvent: (event: GatewayEnvelope) =
     }
 
     setStatus('connecting');
-    const socket = new WebSocket(`/gateway?lastEventSeq=${lastSeqRef.current}`);
+    const socket = new WebSocket(buildGatewayUrl(lastSeqRef.current));
 
     socket.addEventListener('open', () => {
       setStatus('online');

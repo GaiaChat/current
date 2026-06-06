@@ -15,18 +15,26 @@ import { VoiceService } from './voice/voice-service.js';
 import type { VoiceSfuAdapter } from './voice/voice-sfu-types.js';
 import { VoiceMediaShareService } from './voice/voice-media-share-service.js';
 import { GatewayService } from './realtime/gateway-service.js';
-import type { AppContext } from './types/context.js';
+import { AcmeService, type AcmeModuleLoader } from './services/acme-service.js';
+import type { AppContext, CurrentServerInstance } from './types/context.js';
 import { GatewayEvents } from '@current/protocol';
+
+function normalizeServerInstance(value: string | undefined): CurrentServerInstance {
+  return value?.trim().toLowerCase() === 'lan' ? 'lan' : 'standard';
+}
 
 export function createAppContext(input: {
   db: DatabaseSync;
   configPath: string;
   config: CurrentConfig;
+  serverInstance?: CurrentServerInstance;
   voiceSfu?: VoiceSfuAdapter;
+  acmeModuleLoader?: AcmeModuleLoader;
 }): AppContext {
   const repos = createRepositories(input.db);
   const metrics = new MetricsService();
   const serverConfig = new ServerConfigService(input.configPath, input.config);
+  const acme = new AcmeService(serverConfig, input.configPath, input.acmeModuleLoader);
   const auth = new AuthService(repos, serverConfig);
   const setup = new SetupService(repos, serverConfig, input.db);
   const moderation = new ModerationService(repos, metrics);
@@ -34,7 +42,16 @@ export function createAppContext(input: {
   const members = new MemberService(repos, () => serverConfig.get());
   const chat = new ChatService(repos, metrics, moderation, () => serverConfig.get());
   const atprotoBlocks = new AtprotoBlockService();
-  const gateway = new GatewayService(repos, auth, metrics, atprotoBlocks, () => serverConfig.get());
+  const serverInstance =
+    input.serverInstance ?? normalizeServerInstance(process.env.CURRENT_SERVER_INSTANCE);
+  const gateway = new GatewayService(
+    repos,
+    auth,
+    metrics,
+    atprotoBlocks,
+    () => serverConfig.get(),
+    serverInstance,
+  );
   const voice = new VoiceService(
     repos,
     metrics,
@@ -73,6 +90,7 @@ export function createAppContext(input: {
     repos,
     config: serverConfig.get(),
     configPath: input.configPath,
+    serverInstance,
     metrics,
     auth,
     setup,
@@ -86,5 +104,6 @@ export function createAppContext(input: {
     cameraShare,
     gateway,
     serverConfig,
+    acme,
   };
 }

@@ -95,6 +95,16 @@ const AdminSettingsPatchSchema = z
             enabled: z.boolean().optional(),
             certPath: z.string().trim().max(2048).optional(),
             keyPath: z.string().trim().max(2048).optional(),
+            acme: z
+              .object({
+                mode: z.enum(['off', 'manual', 'acme', 'proxy']).optional(),
+                email: z.string().trim().max(320).optional(),
+                domain: z.string().trim().max(255).optional(),
+                directoryUrl: z.string().trim().url().max(2048).optional(),
+                certDir: z.string().trim().max(2048).optional(),
+                renewBeforeDays: z.number().int().min(1).max(90).optional(),
+              })
+              .optional(),
           })
           .optional(),
       })
@@ -224,6 +234,15 @@ const AdminSettingsPatchSchema = z
 
 const OwnershipTransferSchema = z.object({
   targetUserId: z.string().min(1),
+});
+
+const AdminAcmeIssueSchema = z.object({
+  email: z.string().trim().max(320).optional(),
+  domain: z.string().trim().max(255).optional(),
+  directoryUrl: z.string().trim().url().max(2048).optional(),
+  certDir: z.string().trim().max(2048).optional(),
+  renewBeforeDays: z.number().int().min(1).max(90).optional(),
+  staging: z.boolean().optional(),
 });
 
 const MemberRolesPatchSchema = z.object({
@@ -447,8 +466,44 @@ function hasOwnPath(value: unknown, path: string): boolean {
   return current !== undefined;
 }
 
-function requestedHostOnlyAdminSettings(body: z.infer<typeof AdminSettingsPatchSchema>): string[] {
-  return HostOnlyAdminSettingsFieldPaths.filter((path) => hasOwnPath(body, path));
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function partialValueDiffers(requestedValue: unknown, currentValue: unknown): boolean {
+  if (requestedValue === undefined) {
+    return false;
+  }
+
+  if (isPlainRecord(requestedValue) && isPlainRecord(currentValue)) {
+    return Object.entries(requestedValue).some(([key, value]) => partialValueDiffers(value, currentValue[key]));
+  }
+
+  return JSON.stringify(requestedValue) !== JSON.stringify(currentValue);
+}
+
+function hasChangedHostOnlySetting(
+  body: z.infer<typeof AdminSettingsPatchSchema>,
+  current: CurrentConfig,
+  path: string,
+): boolean {
+  if (!hasOwnPath(body, path)) {
+    return false;
+  }
+
+  const requestedValue = getByPath(body, path);
+  if (requestedValue === undefined) {
+    return false;
+  }
+
+  return partialValueDiffers(requestedValue, getByPath(current, path));
+}
+
+function requestedHostOnlyAdminSettings(
+  body: z.infer<typeof AdminSettingsPatchSchema>,
+  current: CurrentConfig,
+): string[] {
+  return HostOnlyAdminSettingsFieldPaths.filter((path) => hasChangedHostOnlySetting(body, current, path));
 }
 
 function changedRestartFields(before: CurrentConfig, after: CurrentConfig): string[] {
@@ -468,13 +523,14 @@ function roleIdsGrantPermission(roles: Role[], roleIds: string[], permission: Pe
 }
 
 function buildRedactedConfig(app: FastifyInstance, config: CurrentConfig) {
+  const isLanServerInstance = app.appContext.serverInstance === 'lan';
   return {
     server: config.server,
     auth: {
       mode: config.auth.mode,
       atprotoClientId: config.auth.atprotoClientId,
       redirectUri: config.auth.redirectUri,
-      lanRedirectBaseUrl: config.auth.lanRedirectBaseUrl,
+      lanRedirectBaseUrl: isLanServerInstance ? config.auth.lanRedirectBaseUrl : '',
       authorizationEndpoint: config.auth.authorizationEndpoint,
       tokenEndpoint: config.auth.tokenEndpoint,
       profileEndpoint: config.auth.profileEndpoint,
@@ -524,6 +580,7 @@ function buildRedactedConfig(app: FastifyInstance, config: CurrentConfig) {
 
 function buildSettingsPayload(app: FastifyInstance, restartRequiredFields: string[] = []) {
   const config = app.appContext.serverConfig.get();
+  const isLanServerInstance = app.appContext.serverInstance === 'lan';
   const serverRecord = app.appContext.repos.servers.getPrimaryServer();
   const ownerUserId = app.appContext.setup.getOwnerUserId() ?? undefined;
   const appearance = buildPublicAppearance(app, config);
@@ -544,11 +601,12 @@ function buildSettingsPayload(app: FastifyInstance, restartRequiredFields: strin
 
   return {
     server,
+    serverInstance: app.appContext.serverInstance,
     serverVersion: getServerVersion(),
     config: buildRedactedConfig(app, config),
     auth: {
       mode: config.auth.mode,
-      lanRedirectBaseUrl: config.auth.lanRedirectBaseUrl,
+      lanRedirectBaseUrl: isLanServerInstance ? config.auth.lanRedirectBaseUrl : '',
     },
     media: {
       maxAttachmentBytes: config.media.maxAttachmentBytes,
@@ -613,6 +671,16 @@ function buildConfigPatch(
             enabled: server.tls.enabled,
             certPath: server.tls.certPath,
             keyPath: server.tls.keyPath,
+            acme: server.tls.acme
+              ? {
+                  mode: server.tls.acme.mode,
+                  email: server.tls.acme.email,
+                  domain: server.tls.acme.domain,
+                  directoryUrl: server.tls.acme.directoryUrl,
+                  certDir: server.tls.acme.certDir,
+                  renewBeforeDays: server.tls.acme.renewBeforeDays,
+                }
+              : undefined,
           }
         : undefined,
     };
@@ -764,7 +832,8 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       return;
     }
 
-    const hostOnlyFields = requestedHostOnlyAdminSettings(body.data);
+    const before = app.appContext.serverConfig.get();
+    const hostOnlyFields = requestedHostOnlyAdminSettings(body.data, before);
     if (hostOnlyFields.length > 0 && !isRequestFromHostMachine(request)) {
       reply.code(403).send({
         error: {
@@ -777,6 +846,17 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const requestedLanRedirectBaseUrl = body.data.auth?.lanRedirectBaseUrl ?? body.data.lanRedirectBaseUrl;
+    if (
+      requestedLanRedirectBaseUrl !== undefined &&
+      app.appContext.serverInstance !== 'lan' &&
+      requestedLanRedirectBaseUrl.trim().length > 0
+    ) {
+      reply.code(400).send({
+        error: 'LAN handoff settings are only available on the LAN server instance.',
+      });
+      return;
+    }
+
     if (requestedLanRedirectBaseUrl !== undefined && !isValidLanRedirectBaseUrl(requestedLanRedirectBaseUrl)) {
       reply.code(400).send({
         error: 'LAN redirect base URL must be empty or a valid http(s) URL.',
@@ -792,7 +872,6 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       reply.code(400).send({ error: 'Banner asset was not found.' });
       return;
     }
-    const before = app.appContext.serverConfig.get();
     const appearanceAttachmentId = body.data.appearance?.backgroundAttachmentId;
     const isExistingBackgroundReference = appearanceAttachmentId === before.appearance.backgroundAttachmentId;
     if (!isExistingBackgroundReference && !validateAssetBelongsToUpload(app, appearanceAttachmentId)) {
@@ -828,6 +907,53 @@ export async function registerAdminRoutes(app: FastifyInstance): Promise<void> {
       });
     }
   });
+
+  app.get('/admin/https/acme/status', { preHandler: [requireAuth] }, async (request, reply) => {
+    const status = app.appContext.setup.status();
+    if (!status.serverId || !request.currentUser) {
+      reply.code(404).send({ error: 'Server not configured.' });
+      return;
+    }
+
+    if (!ensureManageServerPermission(app, request, reply, status.serverId)) {
+      return;
+    }
+
+    reply.send(app.appContext.acme.status());
+  });
+
+  async function handleAdminAcmeIssue(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const status = app.appContext.setup.status();
+    const body = AdminAcmeIssueSchema.safeParse(request.body ?? {});
+    if (!status.serverId || !request.currentUser || !body.success) {
+      reply.code(400).send({ error: 'Invalid request.' });
+      return;
+    }
+
+    if (!ensureManageServerPermission(app, request, reply, status.serverId)) {
+      return;
+    }
+
+    try {
+      const before = app.appContext.serverConfig.get();
+      const result = await app.appContext.acme.issueCertificate(body.data);
+      const after = app.appContext.serverConfig.get();
+      reply.send({
+        ...result,
+        restartRequiredFields: changedRestartFields(before, after),
+      });
+    } catch (error) {
+      reply.code(400).send({
+        error: {
+          code: 'ACME_ISSUE_FAILED',
+          message: error instanceof Error ? error.message : 'Unable to issue HTTPS certificate.',
+        },
+      });
+    }
+  }
+
+  app.post('/admin/https/acme/issue', { preHandler: [requireAuth] }, handleAdminAcmeIssue);
+  app.post('/admin/https/acme/renew', { preHandler: [requireAuth] }, handleAdminAcmeIssue);
 
   app.post('/admin/settings/factory-reset', { preHandler: [requireAuth] }, async (request, reply) => {
     const status = app.appContext.setup.status();

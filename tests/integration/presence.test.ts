@@ -141,4 +141,98 @@ describe('presence status integration', () => {
 
     await close();
   });
+
+  it('lets authenticated users publish and clear ephemeral Spotify audio activity', async () => {
+    const { app, close } = await createTestApp();
+
+    const loginResponse = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/dev-login',
+      payload: {
+        handle: 'presence.spotify@current',
+        displayName: 'Presence Spotify',
+      },
+    });
+
+    expect(loginResponse.statusCode).toBe(200);
+    const setCookie = loginResponse.headers['set-cookie'];
+    const rawCookie = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+    const sessionToken = rawCookie?.match(/current_session=([^;]+)/)?.[1];
+    expect(sessionToken).toBeTruthy();
+    if (!sessionToken) {
+      throw new Error('Expected current_session cookie token');
+    }
+
+    const updateResponse = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/presence/audio',
+      cookies: {
+        current_session: sessionToken,
+      },
+      payload: {
+        activity: {
+          provider: 'spotify',
+          title: 'Bloom',
+          artists: ['The Paper Kites'],
+          album: 'Woodland',
+          isPlaying: true,
+          durationMs: 210000,
+          progressMs: 42000,
+        },
+      },
+    });
+
+    expect(updateResponse.statusCode).toBe(200);
+    const updatedPresence = updateResponse.json() as {
+      presence: {
+        audioActivity?: {
+          provider: string;
+          title: string;
+          artists: string[];
+          expiresAt: string;
+        };
+      };
+    };
+    expect(updatedPresence.presence.audioActivity).toMatchObject({
+      provider: 'spotify',
+      title: 'Bloom',
+      artists: ['The Paper Kites'],
+    });
+    expect(Date.parse(updatedPresence.presence.audioActivity?.expiresAt ?? '')).toBeGreaterThan(Date.now());
+
+    const listResponse = await app.inject({
+      method: 'GET',
+      url: '/api/v1/presence',
+      cookies: {
+        current_session: sessionToken,
+      },
+    });
+
+    expect(listResponse.statusCode).toBe(200);
+    const listed = listResponse.json() as {
+      items: Array<{
+        userId: string;
+        audioActivity?: {
+          title: string;
+        };
+      }>;
+    };
+    expect(listed.items.some((presence) => presence.audioActivity?.title === 'Bloom')).toBe(true);
+
+    const clearResponse = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/presence/audio',
+      cookies: {
+        current_session: sessionToken,
+      },
+      payload: {
+        activity: null,
+      },
+    });
+
+    expect(clearResponse.statusCode).toBe(200);
+    expect((clearResponse.json() as { presence: { audioActivity?: unknown } }).presence.audioActivity).toBeUndefined();
+
+    await close();
+  });
 });

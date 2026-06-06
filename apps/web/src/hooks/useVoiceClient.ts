@@ -19,7 +19,6 @@ type VoiceConnectionStatus =
   | 'reconnecting'
   | 'connected'
   | 'permission_denied'
-  | 'insecure_origin'
   | 'failed';
 
 const VOICE_STATS_INTERVAL_MS = 2_000;
@@ -130,15 +129,6 @@ const DEFAULT_VOICE_AUDIO_SETTINGS: VoiceAudioSettings = {
   autoGainControl: true,
 };
 
-function canUseMicrophoneOnThisOrigin(): boolean {
-  if (window.isSecureContext) {
-    return true;
-  }
-
-  const host = window.location.hostname;
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
-}
-
 function isPermissionDenied(error: unknown): boolean {
   return error instanceof DOMException && (
     error.name === 'NotAllowedError' ||
@@ -169,6 +159,15 @@ function createAudioConstraints(settings: VoiceAudioSettings, includeDevice: boo
   }
 
   return constraints;
+}
+
+function getVoiceMediaDevices(): MediaDevices {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error(
+      'Microphone capture is not available in this browser or HTTP origin. Try localhost, the desktop app, or HTTPS.',
+    );
+  }
+  return navigator.mediaDevices;
 }
 
 function readNumber(value: unknown): number | undefined {
@@ -765,17 +764,13 @@ export function useVoiceClient({
     outputEnabledRef.current = !input.deafened;
     setError(null);
 
-    if (!canUseMicrophoneOnThisOrigin()) {
-      setStatus('insecure_origin');
-      throw new Error('Voice requires HTTPS for non-localhost browser clients.');
-    }
-
     try {
       setStatus('requesting_microphone');
       const selectedAudioSettings = audioSettingsRef.current;
+      const mediaDevices = getVoiceMediaDevices();
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await mediaDevices.getUserMedia({
           audio: createAudioConstraints(selectedAudioSettings, true),
           video: false,
         });
@@ -783,7 +778,7 @@ export function useVoiceClient({
         if (selectedAudioSettings.inputDeviceId === 'default' || !isAudioDeviceSelectionError(error)) {
           throw error;
         }
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await mediaDevices.getUserMedia({
           audio: createAudioConstraints(selectedAudioSettings, false),
           video: false,
         });

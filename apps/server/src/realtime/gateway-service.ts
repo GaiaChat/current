@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { GatewayEnvelope } from '@current/protocol';
 import { GatewayEvents } from '@current/protocol';
-import type { CurrentUser, Message, UserPresence, UserPresenceStatus } from '@current/types';
+import type { CurrentUser, Message, UserAudioActivity, UserPresence, UserPresenceStatus } from '@current/types';
 import type { CurrentConfig } from '@current/config';
 import type { RepositoryBag } from '../db/repositories/index.js';
 import type { AuthService } from '../auth/auth-service.js';
@@ -15,6 +15,7 @@ import { id } from '../utils/id.js';
 import { nowIso } from '../utils/time.js';
 import { isAllowedRequestOrigin } from '../api/origin-guard.js';
 import { hasPermission, resolvePermissions } from '../moderation/permissions.js';
+import type { CurrentServerInstance } from '../types/context.js';
 
 const MAX_CLIENT_PAYLOAD_BYTES = 64 * 1024;
 const TYPING_REFRESH_BROADCAST_MS = 3_500;
@@ -43,6 +44,7 @@ export class GatewayService {
   private readonly clients = new Map<WebSocket, ClientSession>();
   private readonly socketsByUserId = new Map<string, Set<WebSocket>>();
   private readonly selectedPresenceByUserId = new Map<string, UserPresenceStatus>();
+  private readonly audioActivityByUserId = new Map<string, UserAudioActivity>();
   private readonly typingStateByKey = new Map<string, TypingState>();
 
   constructor(
@@ -51,6 +53,7 @@ export class GatewayService {
     private readonly metrics: MetricsService,
     private readonly atprotoBlocks: AtprotoBlockService,
     private readonly getConfig: () => CurrentConfig,
+    private readonly serverInstance: CurrentServerInstance,
   ) {}
 
   attach(server: HttpServer): void {
@@ -69,6 +72,7 @@ export class GatewayService {
         origin: request.headers.origin,
         host: request.headers.host,
         config: this.getConfig(),
+        serverInstance: this.serverInstance,
       })) {
         socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
         socket.destroy();
@@ -149,15 +153,34 @@ export class GatewayService {
     return this.getPresenceForViewer(userId, userId);
   }
 
+  setAudioActivity(userId: string, activity: UserAudioActivity | null): UserPresence {
+    if (activity) {
+      this.audioActivityByUserId.set(userId, activity);
+    } else {
+      this.audioActivityByUserId.delete(userId);
+    }
+
+    this.broadcastPresenceForUser(userId);
+    return this.getPresenceForViewer(userId, userId);
+  }
+
   listPresenceForViewer(viewerUserId: string): UserPresence[] {
     const userIds = new Set<string>([viewerUserId]);
     for (const userId of this.socketsByUserId.keys()) {
       userIds.add(userId);
     }
+    for (const userId of this.audioActivityByUserId.keys()) {
+      userIds.add(userId);
+    }
 
     return [...userIds]
       .map((userId) => this.getPresenceForViewer(userId, viewerUserId))
-      .filter((presence) => presence.status !== 'offline' || presence.userId === viewerUserId);
+      .filter(
+        (presence) =>
+          presence.status !== 'offline' ||
+          presence.audioActivity ||
+          presence.userId === viewerUserId,
+      );
   }
 
   broadcast<T>(type: string, payload: T): number {
@@ -285,12 +308,17 @@ export class GatewayService {
   private getPresenceForViewer(userId: string, viewerUserId: string): UserPresence {
     const selectedStatus = this.getSelectedPresenceStatus(userId);
     const connected = this.hasConnectedUser(userId);
+    const audioActivity =
+      selectedStatus === 'invisible' && userId !== viewerUserId
+        ? undefined
+        : this.getActiveAudioActivity(userId);
 
     if (!connected) {
       return {
         userId,
         status: 'offline',
         connected: false,
+        ...(audioActivity ? { audioActivity } : {}),
       };
     }
 
@@ -306,7 +334,23 @@ export class GatewayService {
       userId,
       status: selectedStatus,
       connected: true,
+      ...(audioActivity ? { audioActivity } : {}),
     };
+  }
+
+  private getActiveAudioActivity(userId: string): UserAudioActivity | undefined {
+    const activity = this.audioActivityByUserId.get(userId);
+    if (!activity) {
+      return undefined;
+    }
+
+    const expiresAt = Date.parse(activity.expiresAt);
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      this.audioActivityByUserId.delete(userId);
+      return undefined;
+    }
+
+    return activity;
   }
 
   private broadcastPresenceForUser(userId: string): void {

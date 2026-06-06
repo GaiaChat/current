@@ -29,6 +29,7 @@ type MediaBackend = 'local' | 's3';
 type GifProvider = 'klipy' | 'giphy';
 type GifFallbackProvider = 'none' | GifProvider;
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+type TlsAcmeMode = 'off' | 'manual' | 'acme' | 'proxy';
 type LinkPolicy = 'allow' | 'members_only' | 'deny';
 type VoiceShareTransportMode = 'p2p_mesh';
 type ScreenShareTransportMode = VoiceShareTransportMode;
@@ -102,6 +103,14 @@ interface RedactedConfig {
       enabled: boolean;
       certPath: string;
       keyPath: string;
+      acme: {
+        mode: TlsAcmeMode;
+        email: string;
+        domain: string;
+        directoryUrl: string;
+        certDir: string;
+        renewBeforeDays: number;
+      };
     };
   };
   auth: {
@@ -177,6 +186,7 @@ interface RedactedConfig {
 }
 
 interface ServerSettingsPayload {
+  serverInstance?: 'standard' | 'lan';
   serverVersion?: string;
   server: {
     id?: string;
@@ -208,6 +218,12 @@ interface ServerSettingsPayload {
   ownership: {
     ownerUserId?: string;
   };
+}
+
+interface AcmeStatusPayload {
+  issuedAt?: string;
+  restartRequired?: boolean;
+  restartRequiredFields?: string[];
 }
 
 interface SharedIpGroupPayload {
@@ -256,6 +272,12 @@ interface SettingsDraft {
     tlsEnabled: boolean;
     tlsCertPath: string;
     tlsKeyPath: string;
+    tlsAcmeMode: TlsAcmeMode;
+    tlsAcmeEmail: string;
+    tlsAcmeDomain: string;
+    tlsAcmeDirectoryUrl: string;
+    tlsAcmeCertDir: string;
+    tlsAcmeRenewBeforeDays: number;
   };
   auth: {
     mode: AuthMode;
@@ -652,6 +674,7 @@ function createDraft(payload: ServerSettingsPayload): SettingsDraft {
   const configPayload = payload.config ?? ({} as RedactedConfig);
   const serverConfig = configPayload.server ?? ({} as RedactedConfig['server']);
   const serverTls = serverConfig.tls ?? ({} as RedactedConfig['server']['tls']);
+  const serverAcme = serverTls.acme ?? ({} as RedactedConfig['server']['tls']['acme']);
   const authConfig = configPayload.auth ?? ({} as RedactedConfig['auth']);
   const storageConfig = configPayload.storage ?? ({} as RedactedConfig['storage']);
   const mediaConfig = configPayload.media ?? ({} as RedactedConfig['media']);
@@ -688,6 +711,13 @@ function createDraft(payload: ServerSettingsPayload): SettingsDraft {
       tlsEnabled: serverTls.enabled ?? false,
       tlsCertPath: serverTls.certPath ?? '',
       tlsKeyPath: serverTls.keyPath ?? '',
+      tlsAcmeMode: serverAcme.mode ?? 'off',
+      tlsAcmeEmail: serverAcme.email ?? '',
+      tlsAcmeDomain: serverAcme.domain ?? '',
+      tlsAcmeDirectoryUrl:
+        serverAcme.directoryUrl ?? 'https://acme-v02.api.letsencrypt.org/directory',
+      tlsAcmeCertDir: serverAcme.certDir ?? '',
+      tlsAcmeRenewBeforeDays: serverAcme.renewBeforeDays ?? 30,
     },
     auth: {
       mode: authConfig.mode ?? 'atproto',
@@ -778,6 +808,34 @@ function mibToBytes(mib: number): number {
   return Math.round(mib * BYTES_PER_MIB);
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function pruneUnchangedSettings(next: unknown, previous: unknown): unknown {
+  if (!isPlainRecord(next) || !isPlainRecord(previous)) {
+    return valuesEqual(next, previous) ? undefined : next;
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(next)) {
+    const pruned = pruneUnchangedSettings(value, previous[key]);
+    if (pruned !== undefined) {
+      result[key] = pruned;
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function hasSettingsPatchFields(value: unknown): boolean {
+  return isPlainRecord(value) && Object.keys(value).length > 0;
+}
+
 function formatPermission(permission: Permission): string {
   return permission
     .toLowerCase()
@@ -790,7 +848,7 @@ function isRestartField(path: string, settings?: ServerSettingsPayload): boolean
   return Boolean(settings?.restartRequiredFieldPaths?.includes(path));
 }
 
-function buildSettingsPatch(draft: SettingsDraft) {
+function buildFullSettingsPatch(draft: SettingsDraft) {
   return {
     server: {
       name: draft.server.name,
@@ -804,6 +862,14 @@ function buildSettingsPatch(draft: SettingsDraft) {
         enabled: draft.server.tlsEnabled,
         certPath: draft.server.tlsCertPath,
         keyPath: draft.server.tlsKeyPath,
+        acme: {
+          mode: draft.server.tlsAcmeMode,
+          email: draft.server.tlsAcmeEmail,
+          domain: draft.server.tlsAcmeDomain,
+          directoryUrl: draft.server.tlsAcmeDirectoryUrl,
+          certDir: draft.server.tlsAcmeCertDir,
+          renewBeforeDays: Number(draft.server.tlsAcmeRenewBeforeDays),
+        },
       },
     },
     auth: {
@@ -912,6 +978,15 @@ function buildSettingsPatch(draft: SettingsDraft) {
   };
 }
 
+function buildSettingsPatch(draft: SettingsDraft, savedDraft?: SettingsDraft | null) {
+  const next = buildFullSettingsPatch(draft);
+  if (!savedDraft) {
+    return next;
+  }
+
+  return pruneUnchangedSettings(next, buildFullSettingsPatch(savedDraft)) ?? {};
+}
+
 async function uploadServerAsset(kind: ServerAssetKind, file: File) {
   const form = new FormData();
   form.append('file', file, file.name);
@@ -1007,6 +1082,8 @@ export function ServerSettingsModal({
   const [automodPayload, setAutomodPayload] = useState('{"keywords":["example"]}');
   const [selectedOwnerId, setSelectedOwnerId] = useState('');
   const [transferNotice, setTransferNotice] = useState('');
+  const [acmeNotice, setAcmeNotice] = useState('');
+  const [ownerVerificationCode, setOwnerVerificationCode] = useState('');
   const [pendingTransferTargetId, setPendingTransferTargetId] = useState<string | null>(null);
   const [factoryResetConfirmation, setFactoryResetConfirmation] = useState('');
   const [factoryResetConfirmOpen, setFactoryResetConfirmOpen] = useState(false);
@@ -1345,7 +1422,11 @@ export function ServerSettingsModal({
       if (!draft) {
         throw new Error('Settings are still loading.');
       }
-      return apiPatch<ServerSettingsPayload>('/api/v1/admin/settings', buildSettingsPatch(draft));
+      const patch = buildSettingsPatch(draft, savedDraft);
+      if (!hasSettingsPatchFields(patch)) {
+        throw new Error('No settings changes to save.');
+      }
+      return apiPatch<ServerSettingsPayload>('/api/v1/admin/settings', patch);
     },
     onSuccess: async (payload) => {
       const next = createDraft(payload);
@@ -1581,6 +1662,44 @@ export function ServerSettingsModal({
       await queryClient.invalidateQueries({ queryKey: ['session'] });
       await queryClient.invalidateQueries({ queryKey: ['roles'] });
       await queryClient.invalidateQueries({ queryKey: ['members'] });
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+    },
+  });
+
+  const claimVerifiedOwnershipMutation = useMutation({
+    mutationFn: () =>
+      apiPost<{ ownerUserId: string }>('/api/v1/setup/owner/claim', {
+        ownerVerificationCode: ownerVerificationCode.trim(),
+      }),
+    onSuccess: async () => {
+      setOwnerVerificationCode('');
+      await queryClient.invalidateQueries({ queryKey: ['session'] });
+      await queryClient.invalidateQueries({ queryKey: ['setup-status'] });
+      await queryClient.invalidateQueries({ queryKey: ['roles'] });
+      await queryClient.invalidateQueries({ queryKey: ['members'] });
+      await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
+    },
+  });
+
+  const issueAcmeCertificateMutation = useMutation({
+    mutationFn: (action: 'issue' | 'renew') => {
+      if (!draft) {
+        throw new Error('Settings are still loading.');
+      }
+      return apiPost<AcmeStatusPayload>(`/api/v1/admin/https/acme/${action}`, {
+        email: draft.server.tlsAcmeEmail,
+        domain: draft.server.tlsAcmeDomain,
+        directoryUrl: draft.server.tlsAcmeDirectoryUrl,
+        certDir: draft.server.tlsAcmeCertDir || undefined,
+        renewBeforeDays: Number(draft.server.tlsAcmeRenewBeforeDays),
+      });
+    },
+    onSuccess: async (payload) => {
+      setAcmeNotice(
+        payload.restartRequired
+          ? 'HTTPS certificate saved. Restart Current to serve HTTPS directly.'
+          : 'HTTPS certificate saved.',
+      );
       await queryClient.invalidateQueries({ queryKey: ['admin-settings'] });
     },
   });
@@ -1916,6 +2035,7 @@ export function ServerSettingsModal({
       return <div className="settings-empty-inline">Loading server settings...</div>;
     }
     const serverVersion = settingsQuery.data?.serverVersion?.trim();
+    const isLanServerInstance = settingsQuery.data?.serverInstance === 'lan';
     return (
       <div className="settings-panel-grid">
         <section className="settings-panel wide">
@@ -1956,7 +2076,7 @@ export function ServerSettingsModal({
             <input value={draft.server.slug} onChange={(event) => updateDraft('server', { slug: event.target.value })} />
           </label>
           <label>
-            {renderFieldLabel('Public URL')}
+            {renderFieldLabel('Server address')}
             <input value={draft.server.publicUrl} onChange={(event) => updateDraft('server', { publicUrl: event.target.value })} />
           </label>
         </section>
@@ -1978,10 +2098,12 @@ export function ServerSettingsModal({
               <option value="lan">LAN screen-name</option>
             </select>
           </label>
-          <label>
-            {renderFieldLabel('LAN handoff base URL')}
-            <input value={draft.auth.lanRedirectBaseUrl} onChange={(event) => updateDraft('auth', { lanRedirectBaseUrl: event.target.value })} />
-          </label>
+          {isLanServerInstance && (
+            <label>
+              {renderFieldLabel('LAN handoff base URL')}
+              <input value={draft.auth.lanRedirectBaseUrl} onChange={(event) => updateDraft('auth', { lanRedirectBaseUrl: event.target.value })} />
+            </label>
+          )}
         </section>
       </div>
     );
@@ -2814,11 +2936,28 @@ export function ServerSettingsModal({
               <label className="settings-check-row padded"><input type="checkbox" checked={draft.server.tlsEnabled} onChange={(event) => updateDraft('server', { tlsEnabled: event.target.checked })} /><span>Enable HTTPS</span></label>
               <label>{renderFieldLabel('TLS cert path', 'server.tls')}<input value={draft.server.tlsCertPath} onChange={(event) => updateDraft('server', { tlsCertPath: event.target.value })} /></label>
               <label>{renderFieldLabel('TLS key path', 'server.tls')}<input value={draft.server.tlsKeyPath} onChange={(event) => updateDraft('server', { tlsKeyPath: event.target.value })} /></label>
+              <label>{renderFieldLabel('HTTPS mode', 'server.tls')}<select value={draft.server.tlsAcmeMode} onChange={(event) => updateDraft('server', { tlsAcmeMode: event.target.value as TlsAcmeMode })}><option value="off">Off</option><option value="manual">Certificate files</option><option value="acme">Let's Encrypt</option><option value="proxy">Reverse proxy</option></select></label>
+              <label>{renderFieldLabel('ACME email', 'server.tls')}<input value={draft.server.tlsAcmeEmail} onChange={(event) => updateDraft('server', { tlsAcmeEmail: event.target.value })} /></label>
+              <label>{renderFieldLabel('ACME domain', 'server.tls')}<input value={draft.server.tlsAcmeDomain} placeholder="chat.example.com" onChange={(event) => updateDraft('server', { tlsAcmeDomain: event.target.value })} /></label>
+              <label>{renderFieldLabel('ACME directory', 'server.tls')}<input value={draft.server.tlsAcmeDirectoryUrl} onChange={(event) => updateDraft('server', { tlsAcmeDirectoryUrl: event.target.value })} /></label>
+              <label>{renderFieldLabel('Certificate folder', 'server.tls')}<input value={draft.server.tlsAcmeCertDir} onChange={(event) => updateDraft('server', { tlsAcmeCertDir: event.target.value })} /></label>
+              <label>{renderFieldLabel('Renew before days', 'server.tls')}<input type="number" min="1" max="90" value={draft.server.tlsAcmeRenewBeforeDays} onChange={(event) => updateDraft('server', { tlsAcmeRenewBeforeDays: Number(event.target.value) })} /></label>
+              <div className="settings-button-row">
+                <button type="button" onClick={() => issueAcmeCertificateMutation.mutate('issue')} disabled={issueAcmeCertificateMutation.isPending}>
+                  {issueAcmeCertificateMutation.isPending ? 'Working...' : 'Issue Certificate'}
+                </button>
+                <button type="button" onClick={() => issueAcmeCertificateMutation.mutate('renew')} disabled={issueAcmeCertificateMutation.isPending}>
+                  Renew Certificate
+                </button>
+              </div>
+              {acmeNotice && <small className="settings-success">{acmeNotice}</small>}
+              {issueAcmeCertificateMutation.error instanceof Error && <small className="settings-error">{issueAcmeCertificateMutation.error.message}</small>}
             </section>
             <section className="settings-panel">
               <h3>OAuth</h3>
               <label>{renderFieldLabel('Client ID')}<input value={draft.auth.atprotoClientId} onChange={(event) => updateDraft('auth', { atprotoClientId: event.target.value })} /></label>
               <label>{renderFieldLabel('Redirect URI')}<input value={draft.auth.redirectUri} onChange={(event) => updateDraft('auth', { redirectUri: event.target.value })} /></label>
+              <small>Created from Server address unless you use a custom OAuth client.</small>
               <label>{renderFieldLabel('Scope')}<input value={draft.auth.scope} onChange={(event) => updateDraft('auth', { scope: event.target.value })} /></label>
               <label>{renderFieldLabel('Cookie secret')}<input type="password" value={draft.auth.cookieSecret} placeholder={settingsQuery.data?.secrets?.cookieSecretConfigured ? 'Configured' : 'Unset'} onChange={(event) => updateDraft('auth', { cookieSecret: event.target.value })} /></label>
               <label className="settings-check-row padded"><input type="checkbox" checked={draft.auth.allowDevLogin} onChange={(event) => updateDraft('auth', { allowDevLogin: event.target.checked })} /><span>Allow dev login</span></label>
@@ -2969,6 +3108,16 @@ export function ServerSettingsModal({
         {!canManageServer ? (
           <div className="settings-empty">
             <p>You need `MANAGE_SERVER` (or `ADMINISTRATOR`) permission to access Server Settings.</p>
+            <label className="settings-inline-claim-code">
+              Owner verification code
+              <input value={ownerVerificationCode} onChange={(event) => setOwnerVerificationCode(event.target.value)} placeholder="1234-5678" />
+            </label>
+            <button className="settings-claim-host-button" onClick={() => claimVerifiedOwnershipMutation.mutate()} disabled={claimVerifiedOwnershipMutation.isPending || !ownerVerificationCode.trim()}>
+              {claimVerifiedOwnershipMutation.isPending ? 'Verifying...' : 'Claim With Code'}
+            </button>
+            {claimVerifiedOwnershipMutation.isError && (
+              <small>{claimVerifiedOwnershipMutation.error instanceof Error ? claimVerifiedOwnershipMutation.error.message : 'Could not claim ownership with that code.'}</small>
+            )}
             <button className="settings-claim-host-button" onClick={() => claimHostOwnershipMutation.mutate()} disabled={claimHostOwnershipMutation.isPending}>
               {claimHostOwnershipMutation.isPending ? 'Claiming...' : 'Claim Host Ownership'}
             </button>

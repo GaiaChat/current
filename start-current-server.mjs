@@ -7,12 +7,29 @@ import { networkInterfaces } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
+import { printGaiaChatBanner } from './gaia-chat-banner.mjs';
 
-const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+function hasCurrentManifest(dir) {
+  return existsSync(join(dir, 'package.json')) || existsSync(join(dir, 'release-info.json'));
+}
+
+function resolveCurrentRoot() {
+  const scriptDir = resolve(dirname(fileURLToPath(import.meta.url)));
+  for (const candidate of [process.cwd(), scriptDir, dirname(scriptDir)]) {
+    const resolved = resolve(candidate);
+    if (hasCurrentManifest(resolved)) {
+      return resolved;
+    }
+  }
+  return scriptDir;
+}
+
+const rootDir = resolveCurrentRoot();
 const serverRoot = join(rootDir, 'apps', 'server');
 const webDistDir = join(rootDir, 'apps', 'web', 'dist');
 const releaseInfoPath = join(rootDir, 'release-info.json');
 const isWindows = process.platform === 'win32';
+const minimumNodeVersion = '24.0.0';
 const checkOnly = process.argv.includes('--check');
 const validModes = new Set(['normal', 'dev']);
 const validInstances = new Set(['standard', 'lan']);
@@ -48,8 +65,11 @@ function maybeRedirectToPortableCurrent() {
   }
 
   const currentRoot = join(dirname(rootDir), 'current');
-  const currentStartScript = join(currentRoot, 'scripts', 'start-current-server.mjs');
-  if (!existsSync(currentStartScript)) {
+  const currentStartScript = [
+    join(currentRoot, 'start-current-server.mjs'),
+    join(currentRoot, 'scripts', 'start-current-server.mjs'),
+  ].find((candidate) => existsSync(candidate));
+  if (!currentStartScript) {
     return;
   }
 
@@ -82,31 +102,8 @@ function maybeRedirectToPortableCurrent() {
   process.exit(result.status ?? 1);
 }
 
-function readCurrentVersion() {
-  for (const filePath of [releaseInfoPath, join(rootDir, 'package.json')]) {
-    try {
-      const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-      if (typeof parsed.version === 'string' && parsed.version.trim()) {
-        return parsed.version.trim();
-      }
-    } catch {
-      // Keep looking.
-    }
-  }
-  return 'dev';
-}
-
+printGaiaChatBanner(rootDir);
 maybeRedirectToPortableCurrent();
-
-function printGaiaChatBanner() {
-  console.log('  ____       _       ____ _           _');
-  console.log(' / ___| __ _(_) __ _/ ___| |__   __ _| |_');
-  console.log("| |  _ / _` | |/ _` | |   | '_ \\ / _` | __|");
-  console.log('| |_| | (_| | | (_| | |___| | | | (_| | |_');
-  console.log(' \\____|\\__,_|_|\\__,_|\\____|_| |_|\\__,_|\\__|');
-  console.log(`Gaia Chat Version ${readCurrentVersion()}`);
-  console.log('');
-}
 
 function commandName(name) {
   return isWindows ? `${name}.cmd` : name;
@@ -145,9 +142,72 @@ function readPnpmVersion() {
   }
 }
 
+function parseVersionParts(version) {
+  return version
+    .split('.')
+    .map((part) => Number(part))
+    .map((part) => (Number.isInteger(part) && part >= 0 ? part : 0));
+}
+
+function compareVersions(left, right) {
+  const leftParts = parseVersionParts(left);
+  const rightParts = parseVersionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+function ensureNodeVersion() {
+  if (compareVersions(process.versions.node, minimumNodeVersion) < 0) {
+    throw new Error(
+      `Node.js ${minimumNodeVersion}+ is required. Current Node.js is ${process.versions.node}.`,
+    );
+  }
+}
+
 function resolvePackageManager() {
   const pnpmVersion = readPnpmVersion();
+  const pnpm = commandName('pnpm');
+  const installedPnpmVersion = commandStdout(pnpm);
+  if (installedPnpmVersion === pnpmVersion) {
+    return {
+      label: `pnpm ${pnpmVersion}`,
+      command: pnpm,
+      prefixArgs: [],
+    };
+  }
+
   const npx = commandName('npx');
+  const corepack = commandName('corepack');
+  if (commandWorks(corepack, ['--version'])) {
+    spawnSync(corepack, ['enable'], {
+      cwd: rootDir,
+      stdio: 'ignore',
+      shell: false,
+    });
+    const prepare = spawnSync(corepack, ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
+      cwd: rootDir,
+      stdio: 'ignore',
+      shell: false,
+    });
+    if (prepare.status === 0) {
+      return {
+        label: `pnpm ${pnpmVersion} via corepack`,
+        command: corepack,
+        prefixArgs: ['pnpm'],
+      };
+    }
+  }
+
   if (commandWorks(npx)) {
     return {
       label: `pnpm ${pnpmVersion} via npx`,
@@ -156,27 +216,10 @@ function resolvePackageManager() {
     };
   }
 
-  const corepack = commandName('corepack');
-  if (commandWorks(corepack, ['--version'])) {
-    spawnSync(corepack, ['prepare', `pnpm@${pnpmVersion}`, '--activate'], {
-      cwd: rootDir,
-      stdio: 'ignore',
-      shell: false,
-    });
-    return {
-      label: `pnpm ${pnpmVersion} via corepack`,
-      command: corepack,
-      prefixArgs: ['pnpm'],
-    };
-  }
-
-  const pnpm = commandName('pnpm');
-  if (commandStdout(pnpm) === pnpmVersion) {
-    return {
-      label: `pnpm ${pnpmVersion}`,
-      command: pnpm,
-      prefixArgs: [],
-    };
+  if (installedPnpmVersion) {
+    throw new Error(
+      `Found pnpm ${installedPnpmVersion}, but this project pins pnpm ${pnpmVersion}. Enable corepack or install the pinned pnpm version.`,
+    );
   }
 
   return null;
@@ -203,6 +246,7 @@ async function dependencyInstallReason(releaseBundle) {
         join(rootDir, 'node_modules', '@current', 'config', 'package.json'),
         join(rootDir, 'node_modules', '@current', 'protocol', 'package.json'),
         join(rootDir, 'node_modules', '@current', 'types', 'package.json'),
+        join(rootDir, 'node_modules', 'acme-client', 'package.json'),
         join(rootDir, 'node_modules', 'fastify', 'package.json'),
         join(rootDir, 'node_modules', 'mediasoup', 'package.json'),
       ]
@@ -278,12 +322,83 @@ function normalizeBrowserHost(host) {
   return trimmed;
 }
 
+function isLoopbackHostname(hostname) {
+  const normalized =
+    hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  return (
+    normalized === 'localhost' ||
+    normalized === '::1' ||
+    normalized === '127.0.0.1' ||
+    normalized.startsWith('127.')
+  );
+}
+
+function isLoopbackUrl(value) {
+  try {
+    return isLoopbackHostname(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function parseStringArg(names) {
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    for (const name of names) {
+      if (arg === name) {
+        const value = args[index + 1];
+        if (!value) {
+          throw new Error(`Missing value for ${name}.`);
+        }
+        return value.trim();
+      }
+      if (arg.startsWith(`${name}=`)) {
+        return arg.slice(name.length + 1).trim();
+      }
+    }
+  }
+  return null;
+}
+
+function normalizePublicUrl(value) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    throw new Error(`Invalid public URL "${value}". Use a full http:// or https:// URL.`);
+  }
+}
+
+function parseNetworkOverrides() {
+  const publicUrl = normalizePublicUrl(
+    parseStringArg(['--public-url']) || process.env.CURRENT_PUBLIC_URL?.trim() || '',
+  );
+  const host =
+    parseStringArg(['--host']) ||
+    process.env.CURRENT_HOST?.trim() ||
+    process.env.CURRENT_SERVER_HOST?.trim() ||
+    null;
+
+  return {
+    publicUrl,
+    host: host || null,
+  };
+}
+
 function defaultLaunchConfig(instance) {
   const port = instance === 'lan' ? defaultLanPort : defaultStandardPort;
   return {
     host: '0.0.0.0',
     port,
     url: `http://127.0.0.1:${port}`,
+    explicitPublicUrl: false,
   };
 }
 
@@ -328,7 +443,7 @@ function withLaunchPort(config, port) {
   return {
     ...config,
     port,
-    url: withPort(config.url, port),
+    url: config.explicitPublicUrl ? config.url : withPort(config.url, port),
   };
 }
 
@@ -339,31 +454,52 @@ function applyLaunchPortOverride(config, portOverride) {
   return withLaunchPort(config, portOverride);
 }
 
-async function readServerLaunchConfig(instance, portOverride) {
+async function readServerLaunchConfig(instance, portOverride, networkOverrides) {
   const fallback = defaultLaunchConfig(instance);
   const configPath = resolveConfigPath(instance);
   if (!existsSync(configPath)) {
-    return applyLaunchPortOverride(fallback, portOverride);
+    const nextFallback = {
+      ...fallback,
+      host: networkOverrides.host ?? fallback.host,
+      url: networkOverrides.publicUrl ?? fallback.url,
+      explicitPublicUrl: Boolean(networkOverrides.publicUrl),
+    };
+    return applyLaunchPortOverride(nextFallback, portOverride);
   }
 
   try {
     const parsed = JSON.parse(await readFile(configPath, 'utf8'));
     const server =
       parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed.server : undefined;
-    const host = typeof server?.host === 'string' ? server.host : fallback.host;
+    const host =
+      networkOverrides.host ?? (typeof server?.host === 'string' ? server.host : fallback.host);
     const port = Number.isInteger(server?.port) && server.port > 0 ? server.port : fallback.port;
     const protocol = server?.tls?.enabled ? 'https' : 'http';
-    const url = `${protocol}://${normalizeBrowserHost(host)}:${port}`;
+    const configuredPublicUrl =
+      typeof server?.publicUrl === 'string' && server.publicUrl.trim()
+        ? server.publicUrl.trim()
+        : null;
+    const publicUrl =
+      networkOverrides.publicUrl ??
+      (configuredPublicUrl && !isLoopbackUrl(configuredPublicUrl) ? configuredPublicUrl : null);
+    const url = publicUrl ?? `${protocol}://${normalizeBrowserHost(host)}:${port}`;
     return applyLaunchPortOverride(
       {
         host,
         port,
         url,
+        explicitPublicUrl: Boolean(publicUrl),
       },
       portOverride,
     );
   } catch {
-    return applyLaunchPortOverride(fallback, portOverride);
+    const nextFallback = {
+      ...fallback,
+      host: networkOverrides.host ?? fallback.host,
+      url: networkOverrides.publicUrl ?? fallback.url,
+      explicitPublicUrl: Boolean(networkOverrides.publicUrl),
+    };
+    return applyLaunchPortOverride(nextFallback, portOverride);
   }
 }
 
@@ -381,6 +517,14 @@ function buildLanDefaultConfig() {
         enabled: false,
         certPath: '',
         keyPath: '',
+        acme: {
+          mode: 'off',
+          email: '',
+          domain: '',
+          directoryUrl: 'https://acme-v02.api.letsencrypt.org/directory',
+          certDir: '',
+          renewBeforeDays: 30,
+        },
       },
     },
     auth: {
@@ -1136,12 +1280,7 @@ function parseModeArg() {
     if (arg === '--dev' || arg === 'dev' || arg === '--developer' || arg === 'developer') {
       return 'dev';
     }
-    if (
-      arg === '--normal' ||
-      arg === 'normal' ||
-      arg === '--regular' ||
-      arg === 'regular'
-    ) {
+    if (arg === '--normal' || arg === 'normal' || arg === '--regular' || arg === 'regular') {
       return 'normal';
     }
     if (arg.startsWith('--mode=')) {
@@ -1219,7 +1358,9 @@ async function chooseMode(releaseBundle) {
   });
 
   try {
-    const answer = (await readline.question('Start mode [1/regular, 2/developer] (default: regular): '))
+    const answer = (
+      await readline.question('Start mode [1/regular, 2/developer] (default: regular): ')
+    )
       .trim()
       .toLowerCase();
     if (
@@ -1289,24 +1430,24 @@ async function buildForNormalMode(pm, releaseBundle) {
 }
 
 async function main() {
-  printGaiaChatBanner();
-
   if (!existsSync(join(rootDir, 'package.json'))) {
     throw new Error(`Could not find Current repo root from ${rootDir}`);
   }
 
+  ensureNodeVersion();
   const packageManager = resolvePackageManager();
   if (!packageManager) {
     throw new Error(
       [
         `Could not find pnpm@${readPnpmVersion()}.`,
-        'Install Node.js 20+ from https://nodejs.org with npm/npx, run "corepack enable" once, or install the pinned pnpm version directly.',
+        `Install Node.js ${minimumNodeVersion}+ from https://nodejs.org with npm/npx, run "corepack enable" once, or install the pinned pnpm version directly.`,
       ].join(' '),
     );
   }
 
   const pm = (args) => [packageManager.command, [...packageManager.prefixArgs, ...args]];
   const releaseBundle = isReleaseBundle();
+  const networkOverrides = parseNetworkOverrides();
   console.log(`[Current] Repo: ${rootDir}`);
   console.log(`[Current] Package manager: ${packageManager.label}`);
   const mode = await chooseMode(releaseBundle);
@@ -1315,11 +1456,17 @@ async function main() {
   const instance = await chooseInstance();
   const portOverride = parsePortArg();
   const configPath = await ensureInstanceConfig(instance);
-  const launchConfig = await readServerLaunchConfig(instance, portOverride);
+  const launchConfig = await readServerLaunchConfig(instance, portOverride, networkOverrides);
 
   console.log(`[Current] Instance: ${instance}`);
   console.log(`[Current] Config: ${configPath}`);
   console.log(`[Current] Mode: ${mode}`);
+  if (networkOverrides.host) {
+    console.log(`[Current] Host override: ${networkOverrides.host}`);
+  }
+  if (networkOverrides.publicUrl) {
+    console.log(`[Current] Public URL override: ${networkOverrides.publicUrl}`);
+  }
   if (portOverride) {
     console.log(`[Current] Port override: ${portOverride}`);
   }
@@ -1351,15 +1498,19 @@ async function main() {
     }
   }
 
+  const serverEnv = {
+    CURRENT_CONFIG_PATH: configPath,
+    CURRENT_SERVER_INSTANCE: instance,
+    ...(networkOverrides.host ? { CURRENT_HOST: networkOverrides.host } : {}),
+    ...(networkOverrides.publicUrl ? { CURRENT_PUBLIC_URL: networkOverrides.publicUrl } : {}),
+    ...(selectedPortOverride ? { CURRENT_PORT: String(selectedPortOverride) } : {}),
+  };
+
   if (mode === 'dev') {
     console.log(
       '[Current] Starting dev server with source watchers. Press Ctrl+C in this terminal to stop it.',
     );
-    await run(...pm(['dev']), 'Current dev server', {
-      CURRENT_CONFIG_PATH: configPath,
-      CURRENT_SERVER_INSTANCE: instance,
-      ...(selectedPortOverride ? { CURRENT_PORT: String(selectedPortOverride) } : {}),
-    });
+    await run(...pm(['dev']), 'Current dev server', serverEnv);
     return;
   }
 
@@ -1369,9 +1520,7 @@ async function main() {
     ? [process.execPath, ['apps/server/dist/index.js']]
     : pm(['--filter', '@current/server', 'start']);
   await run(...normalServer, 'Current normal server', {
-    CURRENT_CONFIG_PATH: configPath,
-    CURRENT_SERVER_INSTANCE: instance,
-    ...(selectedPortOverride ? { CURRENT_PORT: String(selectedPortOverride) } : {}),
+    ...serverEnv,
     CURRENT_WEB_DIST_DIR: webDistDir,
   });
 }
